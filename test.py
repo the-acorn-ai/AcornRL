@@ -1,7 +1,7 @@
 import torch 
 from acornrl.models.huggingface import HFModel
 from acornrl.agents.actor_agent import ActorAgent
-from acornrl.collectors import SequentialTextArenaCollector
+from acornrl.collectors import SequentialTextArenaCollector, ParallelTextArenaCollectorDistributed
 from acornrl.trainers.standard_trainer import StandardTrainer
 
 MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
