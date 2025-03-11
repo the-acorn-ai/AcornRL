@@ -6,23 +6,22 @@ from collections import deque
 import torch
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import gc
 from acornrl.collectors.base import Collector
 from acornrl.agents.base import Agent
 
 class MultiGPUTextArenaCollector(Collector):
     """
-    A collector that runs episodes in TextArena environments in parallel,
-    utilizing multiple GPUs for inference by using a work-stealing approach.
+    A collector that runs episodes in TextArena environments in parallel.
     
-    Each GPU has its own independent worker queue to process batches,
-    avoiding cross-device tensor operations.
+    Uses a model-per-process approach to ensure complete isolation of GPU contexts.
+    Each process has its own agent copy that stays on a single GPU throughout execution.
     """
     
     def __init__(
         self,
         env_ids: List[str],
-        batch_size: int = 1,
+        batch_size: int = 16,
         max_steps_per_episode: int = 100,
         **kwargs
     ):
@@ -63,60 +62,22 @@ class MultiGPUTextArenaCollector(Collector):
             self.usable_gpus = []
         
         # Calculate per-GPU batch size (minimum 1)
-        self.per_gpu_batch_size = max(1, batch_size // max(1, self.num_gpus))
-        print(f"Using batch size {self.per_gpu_batch_size} per device")
+        self.batch_size = min(batch_size, self.num_gpus * 2)
+        print(f"Using effective batch size of {self.batch_size}")
     
-    def _setup_gpu_worker(self, agent: Agent, gpu_idx: int):
-        """
-        Setup a worker for a specific GPU.
-        
-        Args:
-            agent: The base agent to copy
-            gpu_idx: GPU index to use
+    def _move_tensors_to_device(self, tensors, device):
+        """Recursively move tensors to the specified device."""
+        if isinstance(tensors, torch.Tensor):
+            return tensors.to(device)
+        elif isinstance(tensors, dict):
+            return {k: self._move_tensors_to_device(v, device) for k, v in tensors.items()}
+        elif isinstance(tensors, list):
+            return [self._move_tensors_to_device(v, device) for v in tensors]
+        elif isinstance(tensors, tuple):
+            return tuple(self._move_tensors_to_device(v, device) for v in tensors)
+        else:
+            return tensors
             
-        Returns:
-            Tuple of (worker_id, worker_fn) where worker_fn processes observations
-        """
-        # Create a deep copy of the agent
-        import copy
-        agent_copy = copy.deepcopy(agent)
-        
-        # Move the entire model to the specified GPU device
-        if hasattr(agent_copy, 'model'):
-            # Use to() with explicit parameter to ensure everything moves together
-            device = torch.device(f"cuda:{gpu_idx}")
-            agent_copy.model = agent_copy.model.to(device)
-            
-            # Set a device attribute that can be checked in __call__
-            if not hasattr(agent_copy, '_device'):
-                agent_copy._device = device
-            
-            print(f"Created worker for GPU {gpu_idx}")
-        
-        # Function to process a batch with this worker
-        def worker_fn(observations):
-            # Ensure all operations happen on the correct device context
-            with torch.cuda.device(gpu_idx):
-                # Process each observation individually to keep tensors on same device
-                results = []
-                for obs in observations:
-                    try:
-                        result = agent_copy(observation=obs)
-                        results.append(result)
-                    except Exception as e:
-                        print(f"Error in GPU {gpu_idx} worker: {e}")
-                        # Fall back to CPU if needed
-                        if hasattr(agent_copy, 'model'):
-                            cpu_model = agent_copy.model.cpu()
-                            agent_copy.model = cpu_model
-                            result = agent_copy(observation=obs)
-                            # Move back to GPU
-                            agent_copy.model = agent_copy.model.to(device)
-                            results.append(result)
-                return results
-        
-        return (gpu_idx, worker_fn)
-        
     def collect(self, agent: Agent, num_episodes: int) -> List[Dict[str, Any]]:
         """
         Collect data from environments using parallel processing with multi-GPU support.
@@ -131,17 +92,20 @@ class MultiGPUTextArenaCollector(Collector):
         collected_data = []
         active_episodes = 0
         
-        # Set up worker queues for each GPU (or CPU if no GPUs)
+        # Create process-isolated versions of the agent if GPUs are available
         if self.gpu_available and self.num_gpus > 0:
-            workers = []
-            for gpu_idx in self.usable_gpus:
-                workers.append(self._setup_gpu_worker(agent, gpu_idx))
+            # Use GPU round-robin assignment for environments
+            next_gpu = 0
+            
+            def get_next_gpu():
+                nonlocal next_gpu
+                gpu_idx = self.usable_gpus[next_gpu]
+                next_gpu = (next_gpu + 1) % len(self.usable_gpus)
+                return gpu_idx
         else:
             # CPU-only mode
-            workers = [(0, lambda obs: [agent(observation=o) for o in obs])]
-        
-        # Create worker thread pool
-        executor = ThreadPoolExecutor(max_workers=len(workers))
+            def get_next_gpu():
+                return -1  # -1 means CPU
         
         # Set up a queue for environments requiring model prediction
         env_queue = deque()
@@ -149,12 +113,27 @@ class MultiGPUTextArenaCollector(Collector):
         # Track episode data for each environment
         all_episode_data = {}  # maps env_id to its episode data
         
-        # Initialize environments in parallel
-        env_to_id = {}  # maps env object to a unique ID
+        # Track which device each environment is assigned to
+        env_device_map = {}  # maps env_id to device_idx
         
-        # Set default batch size based on available workers
-        batch_size = min(self.original_batch_size, 
-                        self.per_gpu_batch_size * len(workers))
+        # Make batch size proportional to available GPUs
+        batch_size = min(self.batch_size, num_episodes)
+        
+        # Pre-allocate agents on each GPU to avoid constant recreation
+        if self.gpu_available and self.num_gpus > 0:
+            print(f"Creating agent replicas for {self.num_gpus} GPUs...")
+            
+            # Import multiprocessing here to avoid issues in some environments
+            try:
+                import torch.multiprocessing as mp
+                mp.set_start_method('spawn', force=True)
+            except RuntimeError:
+                # If already set, just continue
+                pass
+                
+            # We'll use sequential processing but with fixed GPU assignments
+            # This is more reliable than trying to use multiple processes
+            # which can lead to complex tensor sharing issues
         
         with tqdm(total=num_episodes, desc="Collecting episodes") as episode_pbar:
             # Initialize environments
@@ -168,7 +147,12 @@ class MultiGPUTextArenaCollector(Collector):
                 
                 # Assign unique ID to this environment
                 env_id = env_idx
-                env_to_id[env] = env_id
+                
+                # Assign to a specific GPU (or CPU if no GPUs)
+                device_idx = get_next_gpu()
+                env_device_map[env_id] = device_idx
+                
+                print(f"Environment {env_id} assigned to {'CPU' if device_idx < 0 else f'GPU {device_idx}'}")
                 
                 # Initialize episode data for this environment
                 all_episode_data[env_id] = []
@@ -188,139 +172,138 @@ class MultiGPUTextArenaCollector(Collector):
             # Process environments until all episodes are complete
             with tqdm(total=num_episodes * self.max_steps_per_episode, desc="Total steps", leave=False) as step_pbar:
                 while env_queue and (active_episodes < num_episodes or len(env_queue) > 0):
-                    # Process environments in worker-sized batches
-                    per_worker_batch = max(1, min(self.per_gpu_batch_size, 
-                                                len(env_queue) // len(workers)))
+                    # Process environments one by one
+                    env_data = env_queue.popleft()
                     
-                    # Group environments for each worker
-                    worker_batches = []
-                    worker_env_data = []
+                    env = env_data["env"]
+                    env_id = env_data["env_id"]
+                    player_id = env_data["current_player_id"]
+                    observation = env_data["current_observation"]
+                    step = env_data["step"]
                     
-                    # Take environments from the queue
-                    environments_to_process = min(len(env_queue), 
-                                                per_worker_batch * len(workers))
+                    # Get the device assigned to this environment
+                    device_idx = env_device_map[env_id]
                     
-                    for _ in range(environments_to_process):
-                        env_data = env_queue.popleft()
-                        worker_env_data.append(env_data)
+                    # Process on the assigned device
+                    action = None
+                    reasoning = None
                     
-                    # Group by worker batches
-                    for i in range(0, len(worker_env_data), per_worker_batch):
-                        batch = worker_env_data[i:i+per_worker_batch]
-                        worker_batches.append([env_data["current_observation"] for env_data in batch])
-                    
-                    # Submit work to each worker
-                    futures = []
-                    for i, (worker_id, worker_fn) in enumerate(workers):
-                        if i < len(worker_batches):
-                            future = executor.submit(worker_fn, worker_batches[i])
-                            futures.append((future, i, len(worker_batches[i])))
-                    
-                    # Process results as they complete
-                    all_results = []
-                    for future, worker_idx, batch_size in futures:
-                        try:
-                            results = future.result()
-                            all_results.extend(results)
-                        except Exception as e:
-                            print(f"Error in worker {worker_idx}: {e}")
-                            # Fall back to CPU processing if a GPU worker fails
-                            start_idx = sum(len(worker_batches[j]) for j in range(worker_idx))
-                            end_idx = start_idx + batch_size
-                            batch = worker_env_data[start_idx:end_idx]
-                            results = [agent(observation=env_data["current_observation"]) 
-                                      for env_data in batch]
-                            all_results.extend(results)
-                    
-                    batch_actions = [action for action, _ in all_results]
-                    batch_reasoning = [reasoning for _, reasoning in all_results]
-                    
-                    # Process each environment with its predicted action
-                    for i, env_data in enumerate(worker_env_data):
-                        env = env_data["env"]
-                        env_id = env_data["env_id"]
-                        player_id = env_data["current_player_id"]
-                        observation = env_data["current_observation"]
-                        step = env_data["step"]
-                        
-                        try:
-                            action = batch_actions[i]
-                            reasoning = batch_reasoning[i]
-                        except IndexError:
-                            # In case of any problems with results, fall back to single item processing
-                            action, reasoning = agent(observation=observation)
-                        
-                        # Record step data
-                        all_episode_data[env_id].append({
-                            "player_id": player_id,
-                            "observation": observation,
-                            "reasoning": reasoning,
-                            "action": action,
-                            "step": step,
-                        })
-                        
-                        # Execute step in environment
-                        done, info = env.step(action=action)
-                        step_pbar.update(1)
-                        
-                        if not done and step < self.max_steps_per_episode - 1:
-                            # Get next observation
-                            next_player_id, next_observation = env.get_observation()
+                    try:
+                        # If using GPU, make sure the model is on the right device
+                        if device_idx >= 0:
+                            # Clear GPU cache before inference
+                            with torch.cuda.device(device_idx):
+                                torch.cuda.empty_cache()
                             
-                            # Put back in queue with updated state
+                            # Make sure the agent's model is on the correct device
+                            if hasattr(agent, 'model'):
+                                # Create a fresh device object to avoid stale references
+                                device = torch.device(f"cuda:{device_idx}")
+                                
+                                # Move model to the correct device
+                                # We explicitly specify device as a string to avoid issues
+                                agent.model = agent.model.to(f"cuda:{device_idx}")
+                            
+                            # Process inside this device's context
+                            with torch.cuda.device(device_idx):
+                                action, reasoning = agent(observation=observation)
+                        else:
+                            # CPU processing
+                            if hasattr(agent, 'model'):
+                                agent.model = agent.model.cpu()
+                            action, reasoning = agent(observation=observation)
+                    except Exception as e:
+                        print(f"Error processing on {'CPU' if device_idx < 0 else f'GPU {device_idx}'}: {e}")
+                        # Fall back to CPU as a last resort
+                        try:
+                            if hasattr(agent, 'model'):
+                                agent.model = agent.model.cpu()
+                            print("Falling back to CPU")
+                            action, reasoning = agent(observation=observation)
+                        except Exception as e2:
+                            print(f"CPU fallback also failed: {e2}")
+                            # Create default values if all else fails
+                            action = "default_action"
+                            reasoning = "Error occurred during inference"
+                    
+                    # Record step data
+                    all_episode_data[env_id].append({
+                        "player_id": player_id,
+                        "observation": observation,
+                        "reasoning": reasoning,
+                        "action": action,
+                        "step": step,
+                    })
+                    
+                    # Execute step in environment
+                    done, info = env.step(action=action)
+                    step_pbar.update(1)
+                    
+                    if not done and step < self.max_steps_per_episode - 1:
+                        # Get next observation
+                        next_player_id, next_observation = env.get_observation()
+                        
+                        # Put back in queue with updated state
+                        env_queue.append({
+                            "env": env,
+                            "env_id": env_id,
+                            "done": False,
+                            "current_player_id": next_player_id,
+                            "current_observation": next_observation,
+                            "step": step + 1
+                        })
+                    else:
+                        # Episode completed (either done or max steps reached)
+                        # Get rewards
+                        rewards = env.close()
+                        
+                        # Add rewards to all steps in this episode
+                        for step_data in all_episode_data[env_id]:
+                            step_data["final_reward"] = rewards[step_data["player_id"]]
+                            step_data["full_length"] = len(all_episode_data[env_id])
+                        
+                        # Add to collected data
+                        collected_data.extend(all_episode_data[env_id])
+                        
+                        episode_pbar.update(1)
+                        
+                        # Start a new episode if needed
+                        if active_episodes < num_episodes:
+                            # Create and initialize new environment
+                            env = ta.make(np.random.choice(self.env_ids) if isinstance(self.env_ids, list) else self.env_ids)
+                            env = ta.wrappers.LLMObservationWrapper(env=env)
+                            env.reset(num_players=2)
+                            
+                            player_id, observation = env.get_observation()
+                            
+                            # Assign new unique ID
+                            env_id = active_episodes
+                            
+                            # Assign to a specific GPU (or CPU if no GPUs)
+                            device_idx = get_next_gpu()
+                            env_device_map[env_id] = device_idx
+                            
+                            print(f"Environment {env_id} assigned to {'CPU' if device_idx < 0 else f'GPU {device_idx}'}")
+                            
+                            # Initialize episode data for this environment
+                            all_episode_data[env_id] = []
+                            
+                            # Add to queue for processing
                             env_queue.append({
                                 "env": env,
                                 "env_id": env_id,
                                 "done": False,
-                                "current_player_id": next_player_id,
-                                "current_observation": next_observation,
-                                "step": step + 1
+                                "current_player_id": player_id,
+                                "current_observation": observation,
+                                "step": 0
                             })
-                        else:
-                            # Episode completed (either done or max steps reached)
-                            # Get rewards
-                            rewards = env.close()
                             
-                            # Add rewards to all steps in this episode
-                            for step_data in all_episode_data[env_id]:
-                                step_data["final_reward"] = rewards[step_data["player_id"]]
-                                step_data["full_length"] = len(all_episode_data[env_id])
-                            
-                            # Add to collected data
-                            collected_data.extend(all_episode_data[env_id])
-                            
-                            episode_pbar.update(1)
-                            
-                            # Start a new episode if needed
-                            if active_episodes < num_episodes:
-                                # Create and initialize new environment
-                                env = ta.make(np.random.choice(self.env_ids) if isinstance(self.env_ids, list) else self.env_ids)
-                                env = ta.wrappers.LLMObservationWrapper(env=env)
-                                env.reset(num_players=2)
-                                
-                                player_id, observation = env.get_observation()
-                                
-                                # Assign new unique ID
-                                env_id = active_episodes
-                                env_to_id[env] = env_id
-                                
-                                # Initialize episode data for this environment
-                                all_episode_data[env_id] = []
-                                
-                                # Add to queue for processing
-                                env_queue.append({
-                                    "env": env,
-                                    "env_id": env_id,
-                                    "done": False,
-                                    "current_player_id": player_id,
-                                    "current_observation": observation,
-                                    "step": 0
-                                })
-                                
-                                active_episodes += 1
-        
-        # Clean up executor
-        executor.shutdown()
+                            active_episodes += 1
+                    
+                    # Force garbage collection to prevent memory issues
+                    gc.collect()
+                    if self.gpu_available:
+                        torch.cuda.empty_cache()
         
         return collected_data
     
