@@ -170,26 +170,18 @@ class SequentialTextArenaCollector(Collector):
     
     def _run_episode(
         self, 
-        agent1: Agent,
-        agent2: Agent
+        agent: Agent,
     ) -> List[Dict[str, Any]]:
         """
         Run a single episode in an environment.
         
         Args:
-            agent1: First agent to use
-            agent2: Second agent to use
+            agent: agent to use
             
         Returns:
             List of (observation, action, reward) samples from the episode
         """
         print("\n\nRUN EPISODE\n\n")
-        # randomly set agents
-        if np.random.uniform() < 0.5:
-            agents = {0: agent1, 1: agent2}
-        else:
-            agents = {0: agent2, 1: agent1}
-        
         episode_data = []
 
         # create the environment
@@ -199,7 +191,7 @@ class SequentialTextArenaCollector(Collector):
         env = ta.wrappers.LLMObservationWrapper(env=env)
         
         # Reset the environment
-        env.reset(num_players=len(agents))
+        env.reset(num_players=2)
         done = False
         step = 0
         
@@ -210,7 +202,7 @@ class SequentialTextArenaCollector(Collector):
                 player_id, observation = env.get_observation()
                 
                 # get player action
-                action, reasoning = agents[player_id](observation=observation)
+                action, reasoning = agent(observation=observation)
                 
                 # execute step in environment
                 done, info = env.step(action=action)

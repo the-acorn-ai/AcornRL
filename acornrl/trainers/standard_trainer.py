@@ -68,7 +68,7 @@ class StandardTrainer:
         """
         # Collect the data
         self.logger.info(f"Collecting {episodes_per_epoch} episodes")
-        data = self.collector.collect(agent1=self.agent, agent2=self.agent, num_episodes=episodes_per_epoch)
+        data = self.collector.collect(agent=self.agent, num_episodes=episodes_per_epoch)
         
         # Track total loss
         total_loss = 0.0
