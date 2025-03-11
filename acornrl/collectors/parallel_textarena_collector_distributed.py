@@ -47,13 +47,13 @@ class MultiGPUTextArenaCollector(Collector):
             # Check if all GPUs are usable
             usable_gpus = []
             for i in range(self.num_gpus):
-                try:
-                    with torch.cuda.device(i):
-                        torch.tensor([1.0], device=f"cuda:{i}")
-                    print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
-                    usable_gpus.append(i)
-                except RuntimeError as e:
-                    print(f"  GPU {i}: Not usable - {e}")
+                # try:
+                with torch.cuda.device(i):
+                    torch.tensor([1.0], device=f"cuda:{i}")
+                print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+                usable_gpus.append(i)
+                # except RuntimeError as e:
+                #     print(f"  GPU {i}: Not usable - {e}")
             
             self.usable_gpus = usable_gpus
             self.num_gpus = len(usable_gpus)

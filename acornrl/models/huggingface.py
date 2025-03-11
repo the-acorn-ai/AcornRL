@@ -180,77 +180,77 @@ class HFModel(nn.Module):
         # Tokenize the input
         inputs = self.tokenizer(formatted_input, return_tensors="pt").to(self.device)
         
-        try:
-            # Generate output
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    inputs.input_ids,
-                    attention_mask=inputs.attention_mask,
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
-                    do_sample=do_sample,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    **kwargs
-                )
+        # try:
+        # Generate output
+        with torch.no_grad():
+            outputs = self.model.generate(
+                inputs.input_ids,
+                attention_mask=inputs.attention_mask,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                do_sample=do_sample,
+                pad_token_id=self.tokenizer.pad_token_id,
+                **kwargs
+            )
+        
+        # Decode the generated output
+        full_output = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+        # Extract only the newly generated text
+        prompt_decoded = self.tokenizer.decode(inputs.input_ids[0], skip_special_tokens=True)
+        if full_output.startswith(prompt_decoded):
+            generated_text = full_output[len(prompt_decoded):]
+        else:
+            generated_text = full_output
+        
+        # Extract reasoning and answer
+        # If the model completed both reasoning and answer tags
+        if "</think>" in generated_text and "<answer>" in generated_text and "</answer>" in generated_text:
+            # Extract reasoning (between <think> and </think>)
+            reasoning_match = re.search(r'(.*?)</think>', generated_text, re.DOTALL)
+            reasoning = reasoning_match.group(1).strip() if reasoning_match else ""
             
-            # Decode the generated output
-            full_output = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            # Extract answer (between <answer> and </answer>)
+            answer_match = re.search(r'<answer>(.*?)</answer>', generated_text, re.DOTALL)
+            answer = answer_match.group(1).strip() if answer_match else ""
+        
+        # If the model only completed the reasoning part
+        elif "</think>" in generated_text:
+            # Extract reasoning (between start and </think>)
+            reasoning_match = re.search(r'(.*?)</think>', generated_text, re.DOTALL)
+            reasoning = reasoning_match.group(1).strip() if reasoning_match else ""
             
-            # Extract only the newly generated text
-            prompt_decoded = self.tokenizer.decode(inputs.input_ids[0], skip_special_tokens=True)
-            if full_output.startswith(prompt_decoded):
-                generated_text = full_output[len(prompt_decoded):]
-            else:
-                generated_text = full_output
-            
-            # Extract reasoning and answer
-            # If the model completed both reasoning and answer tags
-            if "</think>" in generated_text and "<answer>" in generated_text and "</answer>" in generated_text:
-                # Extract reasoning (between <think> and </think>)
-                reasoning_match = re.search(r'(.*?)</think>', generated_text, re.DOTALL)
-                reasoning = reasoning_match.group(1).strip() if reasoning_match else ""
-                
-                # Extract answer (between <answer> and </answer>)
-                answer_match = re.search(r'<answer>(.*?)</answer>', generated_text, re.DOTALL)
+            # Look for any content after </think> that might be part of the answer
+            after_think = generated_text.split("</think>")[-1].strip()
+            if after_think.startswith("<answer>"):
+                answer_match = re.search(r'<answer>(.*)', after_think, re.DOTALL)
                 answer = answer_match.group(1).strip() if answer_match else ""
-            
-            # If the model only completed the reasoning part
-            elif "</think>" in generated_text:
-                # Extract reasoning (between start and </think>)
-                reasoning_match = re.search(r'(.*?)</think>', generated_text, re.DOTALL)
-                reasoning = reasoning_match.group(1).strip() if reasoning_match else ""
-                
-                # Look for any content after </think> that might be part of the answer
-                after_think = generated_text.split("</think>")[-1].strip()
-                if after_think.startswith("<answer>"):
-                    answer_match = re.search(r'<answer>(.*)', after_think, re.DOTALL)
-                    answer = answer_match.group(1).strip() if answer_match else ""
-                else:
-                    answer = after_think
-            
-            # Basic fallback - try to find bracketed content as the answer
-            elif "[" in generated_text and "]" in generated_text:
-                # Try to extract bracketed content as the answer
-                answer_match = re.search(r'\[(.*?)\]', generated_text, re.DOTALL)
-                answer = answer_match.group(1).strip() if answer_match else ""
-                
-                # Everything else is reasoning
-                reasoning = generated_text.replace(f"[{answer}]", "").strip()
-            
-            # If we can't find a clear separation
             else:
-                # Just split at the midpoint as a fallback
-                mid_point = len(generated_text) // 2
-                reasoning = generated_text[:mid_point].strip()
-                answer = generated_text[mid_point:].strip()
+                answer = after_think
+        
+        # Basic fallback - try to find bracketed content as the answer
+        elif "[" in generated_text and "]" in generated_text:
+            # Try to extract bracketed content as the answer
+            answer_match = re.search(r'\[(.*?)\]', generated_text, re.DOTALL)
+            answer = answer_match.group(1).strip() if answer_match else ""
             
-            return reasoning, answer
+            # Everything else is reasoning
+            reasoning = generated_text.replace(f"[{answer}]", "").strip()
+        
+        # If we can't find a clear separation
+        else:
+            # Just split at the midpoint as a fallback
+            mid_point = len(generated_text) // 2
+            reasoning = generated_text[:mid_point].strip()
+            answer = generated_text[mid_point:].strip()
+        
+        return reasoning, answer
             
-        except Exception as e:
-            self.logger.error(f"Error in text generation: {e}")
-            # Return a safe fallback
-            return "I cannot reason properly at this time.", "I cannot generate a valid response."
+        # except Exception as e:
+        #     self.logger.error(f"Error in text generation: {e}")
+        #     # Return a safe fallback
+        #     return "I cannot reason properly at this time.", "I cannot generate a valid response."
     
     def prepare_for_training(
         self,
