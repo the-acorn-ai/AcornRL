@@ -34,7 +34,8 @@ agent = ActorAgent(model=model, max_new_tokens=MAX_LENGTH)
 # print(agent("The secret of love is all about: "))
 
 # # initialize the collector
-collector = SequentialTextArenaCollector(env_ids=["SpellingBee-v0"])
+# collector = SequentialTextArenaCollector(env_ids=["SpellingBee-v0"])
+collector = ParallelTextArenaCollectorDistributed(env_ids=["SpellingBee-v0"])
 
 # test data collection
 # data = collector.collect(agent1=agent, agent2=agent, num_episodes=2) # dict_keys(['player_id', 'observation', 'reasoning', 'action', 'step', 'final_reward'])
