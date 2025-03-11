@@ -59,7 +59,7 @@ class MultiGPUTextArenaCollector(Collector):
         self.gpu_lock = threading.Lock()
         
         # Calculate appropriate batch size
-        self.batch_size = min(batch_size, num_gpus * 4) if self.gpu_available else batch_size
+        self.batch_size = min(batch_size, self.num_gpus * 4) if self.gpu_available else batch_size
         print(f"Using batch size of {self.batch_size}")
     
     def _get_least_busy_gpu(self):
