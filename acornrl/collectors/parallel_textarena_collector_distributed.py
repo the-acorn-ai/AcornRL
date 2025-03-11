@@ -7,15 +7,14 @@ import torch
 import os
 import time
 import gc
+import threading
 from acornrl.collectors.base import Collector
 from acornrl.agents.base import Agent
 
 class MultiGPUTextArenaCollector(Collector):
     """
-    A collector that runs episodes in TextArena environments in parallel.
-    
-    Uses a model-per-process approach to ensure complete isolation of GPU contexts.
-    Each process has its own agent copy that stays on a single GPU throughout execution.
+    A collector that ensures balanced utilization across all available GPUs
+    by explicitly controlling the assignment of work.
     """
     
     def __init__(
@@ -26,7 +25,7 @@ class MultiGPUTextArenaCollector(Collector):
         **kwargs
     ):
         """
-        Initialize a TextArena collector with multi-GPU support.
+        Initialize a balanced GPU collector.
         
         Args:
             env_ids: List of TextArena environment IDs to collect from
@@ -37,103 +36,138 @@ class MultiGPUTextArenaCollector(Collector):
         super().__init__(batch_size=batch_size)
         self.env_ids = env_ids
         self.max_steps_per_episode = max_steps_per_episode
-        self.original_batch_size = batch_size
         
-        # Set up GPU device tracking
+        # Set up GPU detection
         self.num_gpus = torch.cuda.device_count()
         self.gpu_available = self.num_gpus > 0
         
         if self.gpu_available:
             print(f"Found {self.num_gpus} GPU(s)")
-            # Check if all GPUs are usable
-            self.usable_gpus = []
+            # List available GPUs and get memory info
+            self.gpu_mem_info = []
             for i in range(self.num_gpus):
-                try:
-                    with torch.cuda.device(i):
-                        torch.tensor([1.0], device=f"cuda:{i}")
-                    print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
-                    self.usable_gpus.append(i)
-                except RuntimeError as e:
-                    print(f"  GPU {i}: Not usable - {e}")
-            
-            self.num_gpus = len(self.usable_gpus)
+                gpu_name = torch.cuda.get_device_name(i)
+                gpu_mem_total = torch.cuda.get_device_properties(i).total_memory / (1024**3)  # GB
+                print(f"  GPU {i}: {gpu_name} with {gpu_mem_total:.2f} GB memory")
+                self.gpu_mem_info.append({"name": gpu_name, "mem_total": gpu_mem_total})
         else:
             print("No GPUs detected, using CPU only")
-            self.usable_gpus = []
+            self.gpu_mem_info = []
         
-        # Calculate per-GPU batch size (minimum 1)
-        self.batch_size = min(batch_size, self.num_gpus * 2)
-        print(f"Using effective batch size of {self.batch_size}")
+        # Set up GPU load tracking
+        self.gpu_tasks = {i: 0 for i in range(self.num_gpus)} if self.gpu_available else {}
+        self.gpu_lock = threading.Lock()
+        
+        # Calculate appropriate batch size
+        self.batch_size = min(batch_size, num_gpus * 4) if self.gpu_available else batch_size
+        print(f"Using batch size of {self.batch_size}")
     
-    def _move_tensors_to_device(self, tensors, device):
-        """Recursively move tensors to the specified device."""
-        if isinstance(tensors, torch.Tensor):
-            return tensors.to(device)
-        elif isinstance(tensors, dict):
-            return {k: self._move_tensors_to_device(v, device) for k, v in tensors.items()}
-        elif isinstance(tensors, list):
-            return [self._move_tensors_to_device(v, device) for v in tensors]
-        elif isinstance(tensors, tuple):
-            return tuple(self._move_tensors_to_device(v, device) for v in tensors)
-        else:
-            return tensors
+    def _get_least_busy_gpu(self):
+        """Get the GPU with the fewest active tasks."""
+        with self.gpu_lock:
+            if not self.gpu_tasks:
+                return 0
+            return min(self.gpu_tasks, key=self.gpu_tasks.get)
+    
+    def _increment_gpu_tasks(self, gpu_idx):
+        """Increment the task count for a GPU."""
+        with self.gpu_lock:
+            self.gpu_tasks[gpu_idx] = self.gpu_tasks.get(gpu_idx, 0) + 1
+    
+    def _decrement_gpu_tasks(self, gpu_idx):
+        """Decrement the task count for a GPU."""
+        with self.gpu_lock:
+            self.gpu_tasks[gpu_idx] = max(0, self.gpu_tasks.get(gpu_idx, 0) - 1)
+    
+    def _print_gpu_utilization(self):
+        """Print current GPU utilization info."""
+        if not self.gpu_available:
+            return
             
+        try:
+            print("\nCurrent GPU utilization:")
+            for i in range(self.num_gpus):
+                # Get memory stats
+                free_mem = torch.cuda.memory_reserved(i) - torch.cuda.memory_allocated(i)
+                total_mem = torch.cuda.get_device_properties(i).total_memory
+                used_mem = total_mem - free_mem
+                percent_used = (used_mem / total_mem) * 100
+                active_tasks = self.gpu_tasks.get(i, 0)
+                
+                print(f"  GPU {i}: {percent_used:.1f}% memory used, {active_tasks} active tasks")
+        except Exception as e:
+            print(f"Error getting GPU stats: {e}")
+    
     def collect(self, agent: Agent, num_episodes: int) -> List[Dict[str, Any]]:
         """
-        Collect data from environments using parallel processing with multi-GPU support.
+        Collect data with balanced GPU utilization.
         
         Args:
-            agent: The agent to use for collecting data
+            agent: Agent to use for generating actions
             num_episodes: Number of episodes to collect
             
         Returns:
-            List of collected data samples
+            List of collected step data
         """
         collected_data = []
         active_episodes = 0
         
-        # Create process-isolated versions of the agent if GPUs are available
-        if self.gpu_available and self.num_gpus > 0:
-            # Use GPU round-robin assignment for environments
-            next_gpu = 0
-            
-            def get_next_gpu():
-                nonlocal next_gpu
-                gpu_idx = self.usable_gpus[next_gpu]
-                next_gpu = (next_gpu + 1) % len(self.usable_gpus)
-                return gpu_idx
-        else:
-            # CPU-only mode
-            def get_next_gpu():
-                return -1  # -1 means CPU
+        # Create model copies for each GPU to avoid moving models
+        # between devices (which can cause issues with memory fragmentation)
+        gpu_models = {}
         
-        # Set up a queue for environments requiring model prediction
+        if self.gpu_available and hasattr(agent, 'model'):
+            print("Initializing model on each GPU...")
+            import copy
+            
+            for i in range(self.num_gpus):
+                # Create a copy of the agent for each GPU
+                gpu_agent = copy.deepcopy(agent)
+                
+                # Move model to the specific GPU and ensure it stays there
+                device = f"cuda:{i}"
+                
+                # Use specific context for this operation
+                with torch.cuda.device(i):
+                    # Clear GPU memory before loading model
+                    torch.cuda.empty_cache()
+                    
+                    # Move model to device
+                    gpu_agent.model = gpu_agent.model.to(device)
+                    
+                    # Store in dictionary
+                    gpu_models[i] = gpu_agent
+                    
+                    # Perform a small forward pass to ensure the model is loaded and properly initialized
+                    if hasattr(gpu_agent.model, 'tokenizer'):
+                        tokenizer = gpu_agent.model.tokenizer
+                        small_input = tokenizer("test", return_tensors="pt").to(device)
+                        try:
+                            with torch.no_grad():
+                                _ = gpu_agent.model(small_input.input_ids)
+                            print(f"  Initialized model on GPU {i}")
+                        except Exception as e:
+                            print(f"  Warning: Couldn't run initialization test on GPU {i}: {e}")
+            
+            print("All GPU models initialized successfully")
+        else:
+            # Single model mode (either CPU or no model attribute)
+            gpu_models = {-1: agent}  # -1 represents CPU
+        
+        # Track which environments are assigned to which GPUs
+        env_gpu_map = {}
+        
+        # Set up a queue for environments
         env_queue = deque()
         
         # Track episode data for each environment
-        all_episode_data = {}  # maps env_id to its episode data
+        all_episode_data = {}
         
-        # Track which device each environment is assigned to
-        env_device_map = {}  # maps env_id to device_idx
-        
-        # Make batch size proportional to available GPUs
+        # Set initial batch size based on available resources
         batch_size = min(self.batch_size, num_episodes)
         
-        # Pre-allocate agents on each GPU to avoid constant recreation
-        if self.gpu_available and self.num_gpus > 0:
-            print(f"Creating agent replicas for {self.num_gpus} GPUs...")
-            
-            # Import multiprocessing here to avoid issues in some environments
-            try:
-                import torch.multiprocessing as mp
-                mp.set_start_method('spawn', force=True)
-            except RuntimeError:
-                # If already set, just continue
-                pass
-                
-            # We'll use sequential processing but with fixed GPU assignments
-            # This is more reliable than trying to use multiple processes
-            # which can lead to complex tensor sharing issues
+        # Print initial GPU utilization
+        self._print_gpu_utilization()
         
         with tqdm(total=num_episodes, desc="Collecting episodes") as episode_pbar:
             # Initialize environments
@@ -148,11 +182,15 @@ class MultiGPUTextArenaCollector(Collector):
                 # Assign unique ID to this environment
                 env_id = env_idx
                 
-                # Assign to a specific GPU (or CPU if no GPUs)
-                device_idx = get_next_gpu()
-                env_device_map[env_id] = device_idx
+                # Assign to the least busy GPU
+                if self.gpu_available:
+                    gpu_idx = self._get_least_busy_gpu()
+                    self._increment_gpu_tasks(gpu_idx)
+                else:
+                    gpu_idx = -1  # CPU
                 
-                print(f"Environment {env_id} assigned to {'CPU' if device_idx < 0 else f'GPU {device_idx}'}")
+                env_gpu_map[env_id] = gpu_idx
+                print(f"Environment {env_id} assigned to {'CPU' if gpu_idx < 0 else f'GPU {gpu_idx}'}")
                 
                 # Initialize episode data for this environment
                 all_episode_data[env_id] = []
@@ -168,11 +206,13 @@ class MultiGPUTextArenaCollector(Collector):
                 })
                 
                 active_episodes += 1
-            
+                
             # Process environments until all episodes are complete
             with tqdm(total=num_episodes * self.max_steps_per_episode, desc="Total steps", leave=False) as step_pbar:
+                env_counter = 0  # For periodically printing GPU stats
+                
                 while env_queue and (active_episodes < num_episodes or len(env_queue) > 0):
-                    # Process environments one by one
+                    # Process environments one by one to avoid memory spikes
                     env_data = env_queue.popleft()
                     
                     env = env_data["env"]
@@ -181,50 +221,27 @@ class MultiGPUTextArenaCollector(Collector):
                     observation = env_data["current_observation"]
                     step = env_data["step"]
                     
-                    # Get the device assigned to this environment
-                    device_idx = env_device_map[env_id]
+                    # Get the assigned GPU for this environment
+                    gpu_idx = env_gpu_map[env_id]
                     
-                    # Process on the assigned device
-                    action = None
-                    reasoning = None
+                    # Use the model assigned to this GPU
+                    device_agent = gpu_models.get(gpu_idx, gpu_models.get(-1))
                     
+                    # Process with the assigned model
                     try:
-                        # If using GPU, make sure the model is on the right device
-                        if device_idx >= 0:
-                            # Clear GPU cache before inference
-                            with torch.cuda.device(device_idx):
-                                torch.cuda.empty_cache()
-                            
-                            # Make sure the agent's model is on the correct device
-                            if hasattr(agent, 'model'):
-                                # Create a fresh device object to avoid stale references
-                                device = torch.device(f"cuda:{device_idx}")
-                                
-                                # Move model to the correct device
-                                # We explicitly specify device as a string to avoid issues
-                                agent.model = agent.model.to(f"cuda:{device_idx}")
-                            
-                            # Process inside this device's context
-                            with torch.cuda.device(device_idx):
-                                action, reasoning = agent(observation=observation)
+                        if gpu_idx >= 0:
+                            # Set CUDA context for this operation
+                            with torch.cuda.device(gpu_idx):
+                                action, reasoning = device_agent(observation=observation)
                         else:
                             # CPU processing
-                            if hasattr(agent, 'model'):
-                                agent.model = agent.model.cpu()
-                            action, reasoning = agent(observation=observation)
+                            action, reasoning = device_agent(observation=observation)
+                            
                     except Exception as e:
-                        print(f"Error processing on {'CPU' if device_idx < 0 else f'GPU {device_idx}'}: {e}")
-                        # Fall back to CPU as a last resort
-                        try:
-                            if hasattr(agent, 'model'):
-                                agent.model = agent.model.cpu()
-                            print("Falling back to CPU")
-                            action, reasoning = agent(observation=observation)
-                        except Exception as e2:
-                            print(f"CPU fallback also failed: {e2}")
-                            # Create default values if all else fails
-                            action = "default_action"
-                            reasoning = "Error occurred during inference"
+                        print(f"Error processing on {'CPU' if gpu_idx < 0 else f'GPU {gpu_idx}'}: {e}")
+                        # Fall back to a generic response if needed
+                        action = "default_action"
+                        reasoning = "Error occurred during processing"
                     
                     # Record step data
                     all_episode_data[env_id].append({
@@ -253,7 +270,11 @@ class MultiGPUTextArenaCollector(Collector):
                             "step": step + 1
                         })
                     else:
-                        # Episode completed (either done or max steps reached)
+                        # Episode completed
+                        # Decrease task count for this GPU
+                        if gpu_idx >= 0:
+                            self._decrement_gpu_tasks(gpu_idx)
+                        
                         # Get rewards
                         rewards = env.close()
                         
@@ -279,11 +300,15 @@ class MultiGPUTextArenaCollector(Collector):
                             # Assign new unique ID
                             env_id = active_episodes
                             
-                            # Assign to a specific GPU (or CPU if no GPUs)
-                            device_idx = get_next_gpu()
-                            env_device_map[env_id] = device_idx
-                            
-                            print(f"Environment {env_id} assigned to {'CPU' if device_idx < 0 else f'GPU {device_idx}'}")
+                            # Assign to the least busy GPU
+                            if self.gpu_available:
+                                gpu_idx = self._get_least_busy_gpu()
+                                self._increment_gpu_tasks(gpu_idx)
+                            else:
+                                gpu_idx = -1  # CPU
+                                
+                            env_gpu_map[env_id] = gpu_idx
+                            print(f"Environment {env_id} assigned to {'CPU' if gpu_idx < 0 else f'GPU {gpu_idx}'}")
                             
                             # Initialize episode data for this environment
                             all_episode_data[env_id] = []
@@ -300,10 +325,17 @@ class MultiGPUTextArenaCollector(Collector):
                             
                             active_episodes += 1
                     
+                    # Periodically print GPU stats
+                    env_counter += 1
+                    if env_counter % 5 == 0:
+                        self._print_gpu_utilization()
+                    
                     # Force garbage collection to prevent memory issues
-                    gc.collect()
-                    if self.gpu_available:
-                        torch.cuda.empty_cache()
+                    if gpu_idx >= 0:
+                        with torch.cuda.device(gpu_idx):
+                            torch.cuda.empty_cache()
+        
+        # Final GPU utilization report
+        self._print_gpu_utilization()
         
         return collected_data
-    
