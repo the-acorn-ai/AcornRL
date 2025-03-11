@@ -9,10 +9,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from acornrl.collectors.base import Collector
 from acornrl.agents.base import Agent
 
-class ParallelTextArenaCollectorDistributed(Collector):
+class MultiGPUTextArenaCollector(Collector):
     """
     A collector that runs episodes in TextArena environments in parallel,
-    utilizing multiple GPUs if available.
+    utilizing multiple GPUs to accelerate inference.
+    
+    The collector creates separate model instances for each GPU and distributes
+    batches across available devices for maximum throughput.
     """
     
     def __init__(
@@ -42,97 +45,85 @@ class ParallelTextArenaCollectorDistributed(Collector):
         if self.gpu_available:
             print(f"Found {self.num_gpus} GPU(s)")
             # Check if all GPUs are usable
+            usable_gpus = []
             for i in range(self.num_gpus):
                 try:
                     with torch.cuda.device(i):
                         torch.tensor([1.0], device=f"cuda:{i}")
                     print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+                    usable_gpus.append(i)
                 except RuntimeError as e:
                     print(f"  GPU {i}: Not usable - {e}")
-                    self.num_gpus -= 1
+            
+            self.usable_gpus = usable_gpus
+            self.num_gpus = len(usable_gpus)
         else:
             print("No GPUs detected, using CPU only")
+            self.usable_gpus = []
         
         # Calculate per-GPU batch size (minimum 1)
         self.per_gpu_batch_size = max(1, batch_size // max(1, self.num_gpus))
         print(f"Using batch size {self.per_gpu_batch_size} per device")
     
-    def _create_agent_copies(self, agent: Agent) -> List[Agent]:
-        """Create copies of the agent for each available GPU."""
-        if not self.gpu_available or self.num_gpus <= 1:
-            return [agent]
-        
-        agent_copies = []
-        # Determine if agent has a model attribute that can be moved to different devices
-        has_model = hasattr(agent, 'model')
-        
-        for i in range(self.num_gpus):
-            if has_model:
-                # Create a deep copy of the agent for each GPU
-                import copy
-                agent_copy = copy.deepcopy(agent)
-                
-                # Move model to the specific GPU
-                device = torch.device(f"cuda:{i}")
-                agent_copy.model.to(device)
-                
-                # Set index to help with debugging
-                agent_copy._gpu_idx = i
-                agent_copies.append(agent_copy)
-            else:
-                # If we can't identify a model to move between devices,
-                # just use the original agent for all operations
-                if i == 0:
-                    agent_copy = agent
-                    agent_copy._gpu_idx = 0
-                    agent_copies.append(agent_copy)
-                else:
-                    print(f"Warning: Agent doesn't have a 'model' attribute. Using the same agent for all GPUs.")
-                    break
-        
-        return agent_copies
+    def _setup_model_on_device(self, model, device_idx):
+        """Move model to specified device with proper initialization."""
+        device = f"cuda:{device_idx}" if device_idx >= 0 else "cpu"
+        return model.to(device)
     
-    def _process_batch_with_agent(self, agent: Agent, observations: List[str]) -> List[Tuple[str, str]]:
-        """Process a batch of observations with a specific agent."""
-        return [agent(observation=obs) for obs in observations]
+    def _create_agent_replicas(self, agent: Agent) -> List[Tuple[Agent, int]]:
+        """
+        Create separate agent replicas for each GPU.
+        
+        Returns:
+            List of tuples (agent_replica, gpu_idx)
+        """
+        # Check if agent has the expected model structure
+        has_usable_model = hasattr(agent, 'model') and hasattr(agent.model, 'to')
+        
+        if not has_usable_model:
+            print("Agent doesn't have a standard model attribute. Using original agent.")
+            return [(agent, -1)]  # Use CPU
+        
+        if not self.gpu_available or self.num_gpus == 0:
+            return [(agent, -1)]  # Use CPU
+            
+        # For single GPU, just move the original agent to that GPU
+        if self.num_gpus == 1:
+            gpu_idx = self.usable_gpus[0]
+            agent.model = self._setup_model_on_device(agent.model, gpu_idx)
+            return [(agent, gpu_idx)]
+            
+        # Create properly initialized model instances for each GPU
+        import copy
+        agent_replicas = []
+        
+        print(f"Creating agent replicas for {self.num_gpus} GPUs")
+        for gpu_idx in self.usable_gpus:
+            # Deep copy the agent
+            agent_copy = copy.deepcopy(agent)
+            
+            # Create model on specific GPU
+            agent_copy.model = self._setup_model_on_device(agent_copy.model, gpu_idx)
+            
+            # Store device information for debugging
+            agent_copy._device_idx = gpu_idx
+            
+            agent_replicas.append((agent_copy, gpu_idx))
+            
+        return agent_replicas
     
-    def _process_multi_gpu(self, agent_copies: List[Agent], all_observations: List[str]) -> List[Tuple[str, str]]:
-        """Process observations in parallel across multiple GPUs."""
-        # Split observations into chunks for each GPU
-        batches = []
+    def _process_batch(self, agent_with_device, batch_observations):
+        """Process a batch of observations with agent on its assigned device."""
+        agent, device_idx = agent_with_device
         
-        for i in range(0, len(all_observations), self.per_gpu_batch_size):
-            batch = all_observations[i:i+self.per_gpu_batch_size]
-            batches.append(batch)
-        
-        # Ensure we don't try to use more GPUs than we have batches
-        num_batches = len(batches)
-        active_agents = agent_copies[:min(self.num_gpus, num_batches)]
-        
-        # Process batches in parallel using thread pool
-        results = []
-        
-        # Use ThreadPoolExecutor for parallel processing
-        with ThreadPoolExecutor(max_workers=len(active_agents)) as executor:
-            futures = []
-            
-            for i, (agent, batch) in enumerate(zip(active_agents, batches[:len(active_agents)])):
-                future = executor.submit(self._process_batch_with_agent, agent, batch)
-                futures.append(future)
-            
-            # If we have more batches than GPUs, process them sequentially with round-robin GPU assignment
-            if num_batches > len(active_agents):
-                for i, batch in enumerate(batches[len(active_agents):]):
-                    agent_idx = i % len(active_agents)
-                    future = executor.submit(self._process_batch_with_agent, active_agents[agent_idx], batch)
-                    futures.append(future)
-            
-            # Collect results in order
-            for future in as_completed(futures):
-                results.extend(future.result())
-        
-        return results
-
+        if device_idx >= 0:
+            # Run in specific CUDA context to keep tensors on correct device
+            with torch.cuda.device(device_idx):
+                return [agent(observation=obs) for obs in batch_observations]
+        else:
+            # CPU processing
+            return [agent(observation=obs) for obs in batch_observations]
+    
     def collect(self, agent: Agent, num_episodes: int) -> List[Dict[str, Any]]:
         """
         Collect data from environments using parallel processing with multi-GPU support.
@@ -147,8 +138,8 @@ class ParallelTextArenaCollectorDistributed(Collector):
         collected_data = []
         active_episodes = 0
         
-        # Create agent copies for each GPU if multiple GPUs are available
-        agent_copies = self._create_agent_copies(agent)
+        # Create agent replicas for each available GPU
+        agent_replicas = self._create_agent_replicas(agent)
         
         # Set up a queue for the environments requiring model prediction
         env_queue = deque()
@@ -192,20 +183,53 @@ class ParallelTextArenaCollectorDistributed(Collector):
             with tqdm(total=num_episodes * self.max_steps_per_episode, desc="Total steps", leave=False) as step_pbar:
                 while env_queue and (active_episodes < num_episodes or len(env_queue) > 0):
                     # Get all environments that need processing
-                    batch_size = min(self.batch_size, len(env_queue))
-                    batch_envs = [env_queue.popleft() for _ in range(batch_size)]
+                    num_to_process = min(self.batch_size, len(env_queue))
+                    batch_envs = [env_queue.popleft() for _ in range(num_to_process)]
                     
                     # Prepare batch of observations for the model
                     batch_observations = [env_data["current_observation"] for env_data in batch_envs]
                     
-                    # Get actions from agent(s) depending on GPU availability
-                    if self.num_gpus <= 1:
-                        # Single GPU or CPU mode - process sequentially
-                        batch_actions_with_reasoning = self._process_batch_with_agent(agent_copies[0], batch_observations)
+                    if len(agent_replicas) == 1:
+                        # Single device mode (CPU or single GPU)
+                        batch_actions_with_reasoning = self._process_batch(
+                            agent_replicas[0], batch_observations
+                        )
                     else:
-                        # Multi-GPU mode - distribute across GPUs
-                        batch_actions_with_reasoning = self._process_multi_gpu(agent_copies, batch_observations)
+                        # Multi-GPU mode - distribute processing across GPUs
+                        batch_results = []
+                        
+                        # Split observations into chunks for each GPU
+                        chunks = []
+                        chunk_size = max(1, len(batch_observations) // len(agent_replicas))
+                        
+                        for i in range(0, len(batch_observations), chunk_size):
+                            chunks.append(batch_observations[i:i+chunk_size])
+                        
+                        # Launch parallel processing with a thread for each GPU
+                        with ThreadPoolExecutor(max_workers=len(agent_replicas)) as executor:
+                            futures = []
+                            
+                            # Process each chunk on a different GPU
+                            for i, (chunk, agent_replica) in enumerate(zip(chunks, agent_replicas)):
+                                if i >= len(chunks):
+                                    break
+                                future = executor.submit(self._process_batch, agent_replica, chunk)
+                                futures.append(future)
+                            
+                            # If we have more chunks than GPUs, use round-robin assignment
+                            if len(chunks) > len(agent_replicas):
+                                for i, chunk in enumerate(chunks[len(agent_replicas):]):
+                                    agent_idx = i % len(agent_replicas)
+                                    future = executor.submit(self._process_batch, agent_replicas[agent_idx], chunk)
+                                    futures.append(future)
+                            
+                            # Gather results from all futures
+                            for future in as_completed(futures):
+                                batch_results.extend(future.result())
+                        
+                        batch_actions_with_reasoning = batch_results
                     
+                    # Extract actions and reasoning
                     batch_actions = [action for action, _ in batch_actions_with_reasoning]
                     batch_reasoning = [reasoning for _, reasoning in batch_actions_with_reasoning]
                     
@@ -289,3 +313,72 @@ class ParallelTextArenaCollectorDistributed(Collector):
                                 active_episodes += 1
         
         return collected_data
+    
+    def _run_episode(
+        self, 
+        agent1: Agent,
+        agent2: Agent
+    ) -> List[Dict[str, Any]]:
+        """
+        Run a single episode in an environment.
+        
+        Args:
+            agent1: First agent to use
+            agent2: Second agent to use
+            
+        Returns:
+            List of (observation, action, reward) samples from the episode
+        """
+        print("\n\nRUN EPISODE\n\n")
+        # randomly set agents
+        if np.random.uniform() < 0.5:
+            agents = {0: agent1, 1: agent2}
+        else:
+            agents = {0: agent2, 1: agent1}
+        
+        episode_data = []
+
+        # create the environment
+        env = ta.make(self.env_ids if not isinstance(self.env_ids, list) else np.random.choice(self.env_ids))
+
+        # wrap the env
+        env = ta.wrappers.LLMObservationWrapper(env=env)
+        
+        # Reset the environment
+        env.reset(num_players=len(agents))
+        done = False
+        step = 0
+        
+        # Run episode until done or max steps reached
+        with tqdm(total=self.max_steps_per_episode, desc="Running episode", leave=False) as pbar:
+            while not done and step < self.max_steps_per_episode:
+                # get observation and current player 
+                player_id, observation = env.get_observation()
+                
+                # get player action
+                action, reasoning = agents[player_id](observation=observation)
+                
+                # execute step in environment
+                done, info = env.step(action=action)
+                
+                # track everything
+                episode_data.append({
+                    "player_id": player_id,
+                    "observation": observation,
+                    "reasoning": reasoning,
+                    "action": action,
+                    "step": step,
+                })
+                step += 1
+                pbar.update(1)  # Increment progress bar
+        
+        # get game rewards
+        rewards = env.close()
+        
+        # add rewards
+        for i in range(len(episode_data)):
+            # get the player's reward
+            episode_data[i]["final_reward"] = rewards[episode_data[i]["player_id"]]
+            episode_data[i]["full_length"] = len(episode_data)
+        
+        return episode_data
