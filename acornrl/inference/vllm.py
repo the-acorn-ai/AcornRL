@@ -4,17 +4,6 @@ import re, os, sys, subprocess
 import time, requests, json, logging, os
 from typing import Dict, Tuple, List, Optional, Any
 
-import torch
-import concurrent.futures
-import logging
-import os
-import time
-import requests
-import subprocess
-import sys
-from typing import Optional, List, Dict, Any
-
-
 
 STANDARD_GAME_PROMPT = "You are a competitive game player. Make sure you read the game instructions carefully, and always follow the required format."
 
@@ -223,18 +212,6 @@ class VLLMServerManager:
                 "--trust-remote-code",
                 "--max-seq-len-to-capture", "48000"
             ]
-            # else:
-            #     cmd = [
-            #         sys.executable, "-m", "vllm.entrypoints.api_server",
-            #         "--model", "./merged_model",
-            #         "--tensor-parallel-size", str(self.tensor_parallel_size),
-            #         "--port", str(port),
-            #         "--host", "0.0.0.0",
-            #         "--gpu-memory-utilization", "0.9",
-            #         "--max-model-len", str(self.max_seq_len),
-            #         "--trust-remote-code",
-            #         "--max-seq-len-to-capture", "48000"
-            #     ]
 
             
             self.logger.info(f"Starting vLLM server on GPUs {gpu_ids} at port {port}")

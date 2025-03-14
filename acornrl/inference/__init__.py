@@ -1,3 +1,3 @@
-from acornrl.inference.vllm import VLLMServerManager
+from acornrl.inference.vllm import VLLMServerManager, VLLMInferenceClient
 
-__all__ = ["VLLMServerManager"]
+__all__ = ["VLLMServerManager", "VLLMInferenceClient"]

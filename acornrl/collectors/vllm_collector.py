@@ -1,12 +1,13 @@
 import os, csv, time, torch
 import statistics, logging, threading 
 import concurrent.futures 
+import numpy as np 
 from tqdm import tqdm 
 from typing import Optional, List, Dict, Any
 
 
 import textarena as ta
-from acornrl.inference import VLLMServerManager
+from acornrl.inference import VLLMServerManager, VLLMInferenceClient
 
 
 
@@ -17,6 +18,10 @@ class VLLMCollector:
         env_ids: List[str],
         logging_dir: str,
         iteration: int,
+        checkpoint_paths: List[str],
+        max_new_tokens: int,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
         max_workers: Optional[int] = None,
         tensor_parallel_size: int = 1,
         gpus: Optional[List[int]] = None,
@@ -28,6 +33,13 @@ class VLLMCollector:
         self.iteration = iteration
         self.tensor_parallel_size = tensor_parallel_size
         self.base_port = base_port
+
+        self.checkpoint_paths = checkpoint_paths
+
+        # generation parameters
+        self.max_new_tokens = max_new_tokens
+        self.temperature = temperature
+        self.top_p = top_p
 
         # Use all GPUs if none are specified
         if gpus is None:
@@ -57,6 +69,9 @@ class VLLMCollector:
         os.makedirs(self.logging_dir, exist_ok=True)
         self.details_csv_path = os.path.join(self.logging_dir, "details.csv")
         self.summary_csv_path = os.path.join(self.logging_dir, "summary.csv")
+
+        self.eval_details_csv_path = os.path.join(self.logging_dir, "eval_details.csv")
+        self.eval_summary_csv_path = os.path.join(self.logging_dir, "eval_summary.csv")
         
         # Create CSV headers if files are new
         self._create_csv_if_needed()
@@ -84,16 +99,29 @@ class VLLMCollector:
                     "tokens_per_second_min", "tokens_per_second_max", "tokens_per_second_stddev", "total_requests", "timestamp_utc"
                 ])
 
-    def collect(
-        self,
-        checkpoint_paths: List[str],
-        num_episodes: int,
-        max_new_tokens: int = 256,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
-    ) -> Dict:
-        self._setup_vllm_clients(checkpoint_paths=checkpoint_paths, max_new_tokens=max_new_tokens)
 
+        # 3) eval_details.csv: logs data about each eval episode
+        if not os.path.exists(self.eval_details_csv_path):
+            with open(self.eval_details_csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "iteration", "set", "env_id", "episode_id", "checkpoint_path", "model_player_id", 
+                    "model_reward", "opponent", "opponent_reward", "episode_length", "info" 
+                ])
+
+
+        # 4) eval_summary.csv: logs eval summary by set (train vs eval)
+        if not os.path.exists(self.eval_summary_csv_path):
+            with open(self.eval_summary_csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "iteration", "set", "set_env_ids", "num_episodes", "checkpoint_path", "avg_model_reward",
+                    "avg_model_win_rate", "opponent", "avg_opponent_reward", "avg_episode_length"
+                ])
+
+                    
+
+    def collect(self, num_episodes: int) -> Dict:
         # Reset metrics
         with self.token_metrics_lock:
             self.total_tokens = 0
@@ -117,7 +145,7 @@ class VLLMCollector:
             
             client_idx = episode_id % len(self.vllm_clients)
             vllm_client = self.vllm_clients[client_idx]
-            checkpoint_path = checkpoint_paths[client_idx % len(checkpoint_paths)]
+            checkpoint_path = self.checkpoint_paths[client_idx % len(self.checkpoint_paths)]
 
             # Create & wrap environment 
             env = ta.make(self.env_ids)
@@ -136,9 +164,9 @@ class VLLMCollector:
                 # Use vLLM for inference 
                 result = vllm_client.generate_text(
                     prompt=observation,
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    top_p=top_p
+                    max_new_tokens=self.max_new_tokens,
+                    temperature=self.temperature,
+                    top_p=self.top_p
                 )
                 
                 # Extract relevant info
@@ -257,7 +285,7 @@ class VLLMCollector:
         # **Write a summary row** for this iteration
         self._write_summary_csv(
             iter_id=self.iteration,
-            checkpoint_path=checkpoint_paths[0] if checkpoint_paths else "unknown",
+            checkpoint_path=self.checkpoint_paths[0] if self.checkpoint_paths else "unknown",
             num_episodes=num_episodes,
             collection_time=collection_time,
             episodes_per_second=episodes_per_second,
@@ -282,7 +310,7 @@ class VLLMCollector:
             },
             "collection_metrics": {
                 "iteration": self.iteration,
-                "checkpoint_paths": checkpoint_paths,
+                "checkpoint_paths": self.checkpoint_paths,
                 "total_episodes": num_episodes,
                 "completed_episodes": self.completed_episodes,
                 "collection_time": collection_time,
@@ -291,19 +319,157 @@ class VLLMCollector:
             "data": collected_data
         }
 
-        self.shutdown()
         return metrics
 
-    def _setup_vllm_clients(self, checkpoint_paths: List[str], max_new_tokens: int):
+
+    def run_evaluation(self, env_ids: Optional[List[str]] = None, num_episodes: int = 10):
+        opponent_name = "google/gemini-2.0-flash-lite-001"
+
+        eval_tracker_subdict = {
+            "num_episodes": 0, "model_rewards": [], 
+            "model_outcomes": [], "opponent_rewards": [], "episode_lengths": []
+            }
+        eval_tracker = {"train": eval_tracker_subdict.copy()}
+        if env_ids is not None and len(env_ids) > 0:
+            eval_tracker["eval"] = eval_tracker_subdict.copy()
+
+        def run_episode(env_id: str, episode_id: int):
+            
+            client_idx = episode_id % len(self.vllm_clients)
+            vllm_client = self.vllm_clients[client_idx]
+
+            # assign player roles
+            agent_idx = int(np.random.uniform() < 0.5)
+            agents = {
+                agent_idx: vllm_client,
+                1-agent_idx: ta.agents.OpenRouterAgent(model_name=opponent_name)
+            }
+
+            # Create & wrap environment
+            env = ta.make(env_id)
+            env = ta.wrappers.LLMObservationWrapper(env=env)
+
+            env.reset(num_players=2)
+            step_count = 0
+            done = False 
+
+            while not done:
+                player_id, observation = env.get_observation()
+
+                # route to correct model
+                model = agents[player_id]
+                if isinstance(model, VLLMInferenceClient):
+                    result = model.generate_text(
+                        prompt=observation,
+                        max_new_tokens=self.max_new_tokens,
+                        temperature=self.temperature,
+                        top_p=self.top_p
+                    )
+                    action = result["answer"]
+                else:
+                    action = model(observation)
+
+                # step
+                done, info = env.step(action=action)
+                step_count += 1
+
+            # Episode is done
+            rewards = env.close()
+
+            eval_episode_info = {
+                "episode_id": episode_id,
+                "env_id": env_id,
+                "opponent": opponent_name,
+                "model_player_id": agent_idx,
+                "model_reward": rewards[agent_idx],
+                "opponent_reward": rewards[1-agent_idx],
+                "episode_length": step_count+1,
+                "info": info,
+                "set": "train" if env_id in self.env_ids else "eval"
+            }
+
+            # write eval info
+            self._write_eval_episode_to_detailed_eval_csv(self.iteration, eval_episode_info)
+
+
+            # Write this episode to evals.csv
+            return eval_episode_info
+
+        wins, count = 0, 0
+        rewards = []
+
+        # Parallel collection
+        all_env_ids = self.env_ids if env_ids is None else self.env_ids+env_ids
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = []
+            # iterate over eval env ids and train env_ids
+            for env_id in all_env_ids:
+                for i in range(num_episodes):
+                    futures.append(executor.submit(run_episode, env_id, i))
+
+            progress_bar = tqdm(
+                total=len(futures),
+                desc="Evaluating Model",
+                postfix={"win_rate": "0%", "avg_reward": "0"}
+            )
+
+            for future in concurrent.futures.as_completed(futures):
+                # TODO lock the eval tracker dict
+                eval_info = future.result()
+
+                with self.token_metrics_lock:
+                    wins += int(eval_info["model_reward"] > eval_info["opponent_reward"])
+                    count += 1
+                    rewards.append(eval_info["model_reward"])
+
+                    # update progress bar
+                    progress_bar.set_postfix(win_rate=f"{wins/count:.2f}%", avg_reward=f"{np.mean(rewards):.2f}")
+                    progress_bar.update(1)
+
+
+                    # update eval tracker dict
+                    eval_tracker[eval_info["set"]]["num_episodes"] += 1
+                    eval_tracker[eval_info["set"]]["model_rewards"].append(eval_info["model_reward"])
+                    eval_tracker[eval_info["set"]]["model_outcomes"].append(int(eval_info["model_reward"] > eval_info["opponent_reward"]))
+                    eval_tracker[eval_info["set"]]["opponent_rewards"].append(eval_info["opponent_reward"])
+                    eval_tracker[eval_info["set"]]["episode_lengths"].append(eval_info["episode_length"])
+
+
+            progress_bar.close()
+
+
+        # log accumulated eval results
+        accumulated_eval_dict = {}
+        for set_name in eval_tracker.keys():
+            set_env_ids = self.env_ids if set_name == "train" else env_ids
+            accumulated_eval_dict[set_name]["env_ids"] = ",".join(set_env_ids)
+            accumulated_eval_dict[set_name]["num_episodes"] = eval_tracker[set_name]["num_episodes"]
+            accumulated_eval_dict[set_name]["avg_model_reward"] = np.mean(eval_tracker[set_name]["model_rewards"])
+            
+            wins = np.sum(eval_tracker[set_name]["model_outcomes"]) 
+            games = len(eval_tracker[set_name]["model_outcomes"])
+            accumulated_eval_dict[set_name]["avg_model_win_rate"] = wins/games if games!=0 else 0
+            accumulated_eval_dict[set_name]["opponent"] = opponent_name
+            accumulated_eval_dict[set_name]["avg_opponent_reward"] = np.mean(eval_tracker[set_name]["opponent_rewards"])
+            accumulated_eval_dict[set_name]["avg_episode_length"] = np.mean(eval_tracker[set_name]["episode_length"])
+        
+
+        # submit for writing
+        self._write_eval_summary_to_eval_csv(iteration=self.iteration, eval_summary_dict=accumulated_eval_dict)
+
+
+
+
+    def _setup_vllm_clients(self):
         # for now only handle single model case 
-        if len(checkpoint_paths) != 1:
+        if len(self.checkpoint_paths) != 1:
             raise NotImplementedError
 
         from acornrl.inference.vllm import VLLMServerManager
         
         self.server_manager = VLLMServerManager(
-            model_path=checkpoint_paths[0],
-            max_seq_len=max_new_tokens,
+            model_path=self.checkpoint_paths[0],
+            max_seq_len=self.max_new_tokens,
             gpus=self.gpus,
             tensor_parallel_size=self.tensor_parallel_size,
             base_port=self.base_port,
@@ -341,6 +507,16 @@ class VLLMCollector:
         if self.server_manager:
             self.server_manager.stop_servers()
             self.vllm_clients = []
+
+
+    def __enter__(self):
+        """Context manager entry: Setup vLLM clients."""
+        self._setup_vllm_clients()
+        return self  # Return the instance for use in the `with` block
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        """Context manager exit: Shut down vLLM clients."""
+        self.shutdown()   
 
 
     def _write_episode_to_details_csv(self, iteration: int, episode_id: int, episode_data: List[Dict[str, Any]]):
@@ -407,6 +583,45 @@ class VLLMCollector:
                 episode_length,
                 rewards_str
             ])
+
+    def _write_eval_episode_to_detailed_eval_csv(self, iteration: int, eval_info: Dict[str, Any]):
+        if not eval_info:
+            return 
+
+        with open(self.eval_details_csv_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                iteration,
+                eval_info.get("set"),
+                eval_info.get("episode_id"),
+                self.checkpoint_paths[0],
+                eval_info.get("model_player_id"),
+                eval_info.get("model_reward"),
+                eval_info.get("opponent"),
+                eval_info.get("opponent_reward"),
+                eval_info.get("episode_length"),
+                eval_info.get("info")
+            ])
+
+    def _write_eval_summary_to_eval_csv(self, iteration: int, eval_summary_dict: Dict[str, Dict[str, Any]]):
+        if not eval_summary_dict:
+            return 
+
+        with open(self.eval_summary_csv_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            for eval_set in eval_summary_dict.keys():
+                writer.writerow([
+                    iteration,
+                    eval_set,
+                    eval_summary_dict[eval_set].get("env_ids"),
+                    eval_summary_dict[eval_set].get("num_episodes"),
+                    self.checkpoint_paths[0],
+                    eval_summary_dict[eval_set].get("avg_model_reward"),
+                    eval_summary_dict[eval_set].get("avg_model_win_rate"),
+                    eval_summary_dict[eval_set].get("opponent"),
+                    eval_summary_dict[eval_set].get("avg_opponent_reward"),
+                    eval_summary_dict[eval_set].get("avg_episode_length")
+                ])
 
 
     def _write_summary_csv(
