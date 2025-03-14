@@ -1,2 +1,20 @@
+# Core framework
 textarena
-torch
+
+# Model serving
+vllm
+
+# Optimization
+deepspeed
+
+# Utilities
+requests
+tqdm
+concurrent-futures
+logging
+
+# File format handling
+json
+
+# Optional but recommended
+nvidia-cuda-runtime

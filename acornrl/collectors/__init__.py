@@ -1,9 +1,3 @@
-from .base import Collector
-from acornrl.collectors.sequential_textarena_collector import SequentialTextArenaCollector
-from acornrl.collectors.parallel_textarena_collector_distributed import MultiGPUTextArenaCollector
+from acornrl.collectors.vllm_collector import VLLMCollector
 
-__all__ = [
-    "Collector", 
-    "SequentialTextArenaCollector", 
-    "MultiGPUTextArenaCollector"
-]
+__all__ = ["VLLMCollector"]
