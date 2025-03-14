@@ -44,10 +44,10 @@ def main():
         max_new_tokens=args.max_seq_len
     ) as collector:
         # collect training data
-        # print(f"[Data Collection] loading model {args.checkpoint}")
-        # data_dict = collector.collect(num_episodes=args.episodes)
-        # new_data = data_dict["data"]
-        # print(f"[Data Collection] Collected {len(new_data)} new transitions.")
+        print(f"[Data Collection] loading model {args.checkpoint}")
+        data_dict = collector.collect(num_episodes=args.episodes)
+        new_data = data_dict["data"]
+        print(f"[Data Collection] Collected {len(new_data)} new transitions.")
 
 
         # check if eval
