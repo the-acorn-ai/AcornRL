@@ -17,6 +17,7 @@ LOG_FOLDER="$RUN_FOLDER/logging"
 # Create necessary directories
 mkdir -p "$DATA_FOLDER" "$CHECKPOINT_FOLDER" "$LOG_FOLDER"
 
+
 # Number of iterations for training loop
 NUM_ITERATIONS=2  # Change as needed
 
@@ -28,15 +29,32 @@ MAX_SEQ_LEN=128 #8192
 EPISODES_PER_ITER=2
 current_checkpoint="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
+# Number of GPUs to use (set dynamically)
+NUM_GPUS_REQUESTED=2  # Change this to set how many GPUs to use
+
+# Detect number of GPUs
+NUM_GPUS_AVAILABLE=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+echo "Detected $NUM_GPUS_AVAILABLE GPUs."
+
+# Ensure we don't request more GPUs than available
+if [ "$NUM_GPUS_REQUESTED" -gt "$NUM_GPUS_AVAILABLE" ]; then
+    echo "Warning: Requested $NUM_GPUS_REQUESTED GPUs, but only $NUM_GPUS_AVAILABLE available."
+    NUM_GPUS=$NUM_GPUS_AVAILABLE
+else
+    NUM_GPUS=$NUM_GPUS_REQUESTED
+fi
+GPU_IDS=$(seq -s, 0 $((NUM_GPUS - 1)))  # Generates "0,1" for 2 GPUs, etc.
+
 
 echo "Starting RL training loop for $NUM_ITERATIONS iterations..."
 echo "with environments: $ENV_IDS"
+echo "Using GPUs: $GPU_IDS"
 
 for ((i=1; i<=NUM_ITERATIONS; i++)); do
     echo "=== Iteration $i ==="
 
     # Run data collection
-    python3 collect_data.py \
+    CUDA_VISIBLE_DEVICES=$GPU_IDS python3 collect_data.py \
         --checkpoint $current_checkpoint\
         --episodes $EPISODES_PER_ITER \
         --max-seq-len $MAX_SEQ_LEN \
@@ -47,7 +65,7 @@ for ((i=1; i<=NUM_ITERATIONS; i++)); do
     echo "[Training] Running training script..."
     
     # Run training script (modify with actual script path & arguments)
-    deepspeed --num_gpus 0 train_lora_model.py \
+    deepspeed --num_gpus $NUM_GPUS train_lora_model.py \
         --max-seq-len $MAX_SEQ_LEN \
         --output-dir "$RUN_FOLDER" \
         --iter $i
