@@ -52,9 +52,11 @@ def main():
 
         # check if eval
         if args.run_eval:
-            print(f"[Evaluation] running {args.eval_episodes} of evaluation on {args.eval_env_ids}")
-            collector.run_evaluation(env_ids=args.eval_env_ids, num_episodes=args.eval_episodes)
-
+            try:
+                print(f"[Evaluation] running {args.eval_episodes} of evaluation on {args.eval_env_ids}")
+                collector.run_evaluation(env_ids=args.eval_env_ids, num_episodes=args.eval_episodes)
+            except Exception as e:
+                print(f"FAILED Evaluation with {e}")
 
     # Save collected data as a new JSON file
     with open(data_file, "w") as f:

@@ -441,6 +441,8 @@ class VLLMCollector:
         # log accumulated eval results
         accumulated_eval_dict = {}
         for set_name in eval_tracker.keys():
+            if set_name not in accumulated_eval_dict:
+                accumulated_eval_dict[set_name] = {}
             set_env_ids = self.env_ids if set_name == "train" else env_ids
             accumulated_eval_dict[set_name]["env_ids"] = ",".join(set_env_ids)
             accumulated_eval_dict[set_name]["num_episodes"] = eval_tracker[set_name]["num_episodes"]
@@ -451,7 +453,7 @@ class VLLMCollector:
             accumulated_eval_dict[set_name]["avg_model_win_rate"] = wins/games if games!=0 else 0
             accumulated_eval_dict[set_name]["opponent"] = opponent_name
             accumulated_eval_dict[set_name]["avg_opponent_reward"] = np.mean(eval_tracker[set_name]["opponent_rewards"])
-            accumulated_eval_dict[set_name]["avg_episode_length"] = np.mean(eval_tracker[set_name]["episode_length"])
+            accumulated_eval_dict[set_name]["avg_episode_length"] = np.mean(eval_tracker[set_name]["episode_lengths"])
         
 
         # submit for writing
