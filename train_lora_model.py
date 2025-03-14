@@ -162,7 +162,7 @@ def main():
         remove_unused_columns=False,
         gradient_checkpointing=True,
         optim="adamw_hf", #"adamw_torch",
-        deepspeed="./ds_config_fp16.json",
+        deepspeed="./acornrl/deepspeed_configs/ds_config_fp16.json",
         # Memory optimizations
         per_device_eval_batch_size=1,
         dataloader_pin_memory=False,
