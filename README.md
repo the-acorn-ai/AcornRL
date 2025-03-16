@@ -9,3 +9,5 @@
 
 
 - reduce the episode_to_details_csv to just one row per episode maybe?
+
+- add force-answer function if cot is too long (and there is a max-seq argument)

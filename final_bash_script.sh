@@ -19,20 +19,20 @@ mkdir -p "$DATA_FOLDER" "$CHECKPOINT_FOLDER" "$LOG_FOLDER"
 
 
 # Number of iterations for training loop
-NUM_ITERATIONS=5  # Change as needed
+NUM_ITERATIONS=15  # Change as needed
 
 # List of environments (passed as args)
-ENV_IDS=("Snake-v0")
+ENV_IDS=("TicTacToe-v0")
 EVAL_ENV_IDS=("ConnectFour-v0")
 EVAL_EPISODES=10
 
 # Maximum sequence length
-MAX_SEQ_LEN=4096
-EPISODES_PER_ITER=100
+MAX_SEQ_LEN=8192
+EPISODES_PER_ITER=100 #100 #100
 current_checkpoint="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
 # Number of GPUs to use (set dynamically)
-NUM_GPUS_REQUESTED=3  # Change this to set how many GPUs to use
+NUM_GPUS_REQUESTED=4  # Change this to set how many GPUs to use
 
 # Detect number of GPUs
 NUM_GPUS_AVAILABLE=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
@@ -63,9 +63,9 @@ for ((i=1; i<=NUM_ITERATIONS; i++)); do
         --env-ids "${ENV_IDS[@]}" \
         --output-dir "$RUN_FOLDER" \
         --iter $i \
-        --run-eval \
-        --eval-env-ids "${EVAL_ENV_IDS[@]}" \
-        --eval-episodes $EVAL_EPISODES
+        #--run-eval \
+        #--eval-env-ids "${EVAL_ENV_IDS[@]}" \
+        #--eval-episodes $EVAL_EPISODES
 
     echo "[Training] Running training script..."
     

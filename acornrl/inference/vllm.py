@@ -142,14 +142,16 @@ class VLLMInferenceClient:
             think_end_pos = text.find('</think>') + len('</think>')
             answer = text[think_end_pos:].strip()
         else:
-            # If no <think> or <answer> tags, look for content in square brackets
-            bracket_matches = re.findall(bracket_pattern, text, re.DOTALL)
-            if bracket_matches:
-                # If square brackets are found, take the last occurrence
-                answer = bracket_matches[-1].strip()
-            else:
-                # If no square brackets either, return the full text as the answer
-                answer = text.strip()
+            answer_words = text.split()[-100:]
+            answer = " ".join(answer_words)
+            # # If no <think> or <answer> tags, look for content in square brackets
+            # bracket_matches = re.findall(bracket_pattern, text, re.DOTALL)
+            # if bracket_matches:
+            #     # If square brackets are found, take the last occurrence
+            #     answer = bracket_matches[-1].strip()
+            # else:
+            #     # If no square brackets either, return the full text as the answer
+            #     answer = text.strip()
                             
         return reasoning, answer
 
