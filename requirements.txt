@@ -1,0 +1,24 @@
+# Core framework
+textarena
+
+# Model serving
+vllm
+
+# Optimization
+deepspeed
+
+# Utilities
+requests
+tqdm
+concurrent-futures
+logging
+numpy
+tqdm
+datasets
+peft
+
+# File format handling
+json
+
+# Optional but recommended
+nvidia-cuda-runtime
