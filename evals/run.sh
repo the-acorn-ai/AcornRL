@@ -8,7 +8,15 @@ MODEL_NAME=deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
 #   --output_path ./results/gpqa_main_${MODEL_NAME//\//_}.json
 
 # Diamond GPQA tasks
-lm_eval --model vllm \
-  --model_args pretrained=$MODEL_NAME,trust_remote_code=true,data_parallel_size=4 \
-  --tasks gpqa_diamond_zeroshot,gpqa_diamond_n_shot,gpqa_diamond_generative_n_shot,gpqa_diamond_cot_zeroshot,gpqa_diamond_cot_n_shot \
+CUDA_VISIBLE_DEVICES=1 lm_eval --model vllm \
+  --model_args pretrained=$MODEL_NAME,trust_remote_code=true \
+  --tasks gpqa_diamond_generative_n_shot \
+  --apply_chat_template \
+  --max_tokens 8192 \
   --output_path ./results/gpqa_diamond_${MODEL_NAME//\//_}.json
+
+# CUDA_VISIBLE_DEVICES=1,2 lm_eval --model vllm \
+#   --model_args pretrained=$MODEL_NAME,trust_remote_code=true,data_parallel_size=2 \
+#   --tasks gpqa_diamond_generative_n_shot,gpqa_diamond_cot_zeroshot,gpqa_diamond_cot_n_shot \
+#   --apply_chat_template \
+#   --output_path ./results/gpqa_diamond_${MODEL_NAME//\//_}.json
