@@ -1,3 +1,3 @@
-from .base import Collector
+from acornrl.collectors.vllm_collector import VLLMCollector
 
-__all__ = ["Collector"]
+__all__ = ["VLLMCollector"]

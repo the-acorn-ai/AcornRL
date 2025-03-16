@@ -1,0 +1,46 @@
+# Ignore training runs folder
+training_runs/
+
+# Ignore Python cache files
+__pycache__/
+*.py[cod]
+
+# Ignore virtual environments
+venv/
+.env/
+
+# Ignore environment files
+*.env
+*.venv
+
+# Ignore logs and temp files
+*.log
+*.tmp
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
+
+# Ignore compiled code
+*.so
+*.o
+*.a
+*.out
+
+# Ignore dependency management
+Pipfile
+Pipfile.lock
+poetry.lock
+
+# Ignore IDE settings (for VS Code, JetBrains, etc.)
+.vscode/
+.idea/
+*.iml
+
+# Ignore built distributions
+dist/
+build/
+*.egg-info/
