@@ -1,3 +1,6 @@
 [submodule "evals/LiveCodeBench"]
 	path = evals/LiveCodeBench
 	url = https://github.com/LiveCodeBench/LiveCodeBench.git
+[submodule "evals/lm-evaluation-harness"]
+	path = evals/lm-evaluation-harness
+	url = https://github.com/EleutherAI/lm-evaluation-harness
