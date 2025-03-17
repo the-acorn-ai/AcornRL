@@ -4,6 +4,10 @@ We evaluate the performance of our models in the following three categories:
 2. Out-of-domain game performance (winrate vs SFT baseline)
 3. OOD generalization (reasoning and code benchmark)
    
+## Efficiency
+- [ ] Unify the interface as vllm generate and data parallelism
+- [ ] Speed up with long context parallelism (context parallelism)
+
 ## In-domain Game Performance
 TODO
 ## Out-of-domain Game Performance
@@ -18,7 +22,7 @@ The following benchmarks covered in Deepseek R1 paper are used:
 - [X] **DROP** (3-shot F1) - Discrete Reasoning Over Paragraphs
 - [X] **IF-Eval** (Prompt Strict) - Instruction Following Evaluation
 - [X] **GPQA Diamond** (Pass@1) - Graduate-level Professional Question Answering
-- [ ] **SimpleQA** (Correct) - Basic question answering benchmark
+- [X] **SimpleQA** (Correct) - Basic question answering benchmark
 - [ ] **FRAMES** (Acc.) - Measures accuracy on frame-based reasoning
 - [ ] **AlpacaEval2.0** (LC-winrate) - Evaluates using length-controlled win rate
 - [ ] **ArenaHard** (GPT-4-1106) - Challenging evaluation against GPT-4
@@ -29,7 +33,7 @@ The following benchmarks covered in Deepseek R1 paper are used:
 - [ ] **Codeforces** (Rating) - Competitive programming benchmark (rating)
 - [ ] **SWE Verified** (Resolved) - Software Engineering verification
 
-## Math Benchmark
+## Math Benchmark (pass@1 and con@64)
 - [X] **AIME 2024** (Pass@1) - American Invitational Mathematics Examination
 - [X] **MATH-500** (Pass@1) - Collection of 500 challenging math problems
 - [X] **AMC 2023** (Pass@1) - American Mathematics Competitions
@@ -43,6 +47,6 @@ The following benchmarks covered in Deepseek R1 paper are used:
 - [ ] **CNMO 2024** (Pass@1) - Chinese National Mathematics Olympiad
 
 ### Acknowledgements
-- GPQA, MMLU, DROP: [OpenAI/simple-evals](https://github.com/openai/simple-evals)
+- GPQA, MMLU, DROP, SimpleQA: [OpenAI/simple-evals](https://github.com/openai/simple-evals)
 - MATH Related benchmarks: [hkust-nlp/simpleRL-reason](https://github.com/hkust-nlp/simpleRL-reason)
 - LiveCodeBench, IF-Eval: [QwenLM/QwQ](https://github.com/QwenLM/QwQ/tree/main/eval)

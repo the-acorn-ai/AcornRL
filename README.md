@@ -6,7 +6,7 @@
 - add non-lora training back in
 
 ### Eval
-- Eval Benchmarks Implementation (Check [evals](acornrl/evals/README.md)) For now just vs 4o-mini
+- Eval Benchmarks Implementation (Check [evals](evals/README.md)) For now just vs 4o-mini
 
 ### Data Collection
 - make it easy to load data from previous N data collection rounds

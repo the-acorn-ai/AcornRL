@@ -44,3 +44,11 @@ poetry.lock
 dist/
 build/
 *.egg-info/
+
+# Ignore eval data
+**/eval/**/*.json
+**/eval/**/*.jsonl
+**output/**/*.json
+**output/**/*.jsonl
+**/benchmarks/*-eval/output/*.jsonl
+evals/benchmarks/qwq-eval/data/livecodebench_v5_tests/

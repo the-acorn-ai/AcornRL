@@ -61,6 +61,7 @@ def main():
     else:
         with open(args.output_file, 'w', encoding='utf-8') as g:
             pass
+        completed_counts = {}
 
     expanded_data = []
     for item in data:
