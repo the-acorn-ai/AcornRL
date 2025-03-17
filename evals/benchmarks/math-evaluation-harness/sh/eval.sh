@@ -31,7 +31,6 @@ TOKENIZERS_PARALLELISM=false \
 #     --overwrite
 
 # Consensus evaluation
-export CUDA_VISIBLE_DEVICES=0,1,2,3
 python3 -u math_eval.py \
     --model_name_or_path ${MODEL_NAME_OR_PATH} \
     --data_name ${DATA_NAME} \

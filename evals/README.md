@@ -18,7 +18,7 @@ TODO
 The following benchmarks covered in Deepseek R1 paper are used:
 ## English Language Benchmarks
 - [X] **MMLU** (Pass@1) - Massive Multitask Language Understanding
-- [ ] **MMLU-Pro** (EM) - Professional/advanced version with Exact Match evaluation
+- [X] **MMLU-Pro** (EM) - Professional/advanced version with Exact Match evaluation
 - [X] **DROP** (3-shot F1) - Discrete Reasoning Over Paragraphs
 - [X] **IF-Eval** (Prompt Strict) - Instruction Following Evaluation
 - [X] **GPQA Diamond** (Pass@1) - Graduate-level Professional Question Answering
@@ -29,9 +29,9 @@ The following benchmarks covered in Deepseek R1 paper are used:
 
 ## Code Benchmarks
 - [X] **LiveCodeBench** (Pass@1-COT) - Real-time code generation evaluation
-- [ ] **Codeforces** (Percentile) - Competitive programming benchmark (percentile)
-- [ ] **Codeforces** (Rating) - Competitive programming benchmark (rating)
-- [ ] **SWE Verified** (Resolved) - Software Engineering verification
+- [X] **Codeforces** (Percentile) - Competitive programming benchmark (percentile)
+- [X] **Codeforces** (Rating) - Competitive programming benchmark (rating)
+- [X] **SWE Verified** (Resolved) - Software Engineering verification
 
 ## Math Benchmark (pass@1 and con@64)
 - [X] **AIME 2024** (Pass@1) - American Invitational Mathematics Examination
@@ -50,3 +50,5 @@ The following benchmarks covered in Deepseek R1 paper are used:
 - GPQA, MMLU, DROP, SimpleQA: [OpenAI/simple-evals](https://github.com/openai/simple-evals)
 - MATH Related benchmarks: [hkust-nlp/simpleRL-reason](https://github.com/hkust-nlp/simpleRL-reason)
 - LiveCodeBench, IF-Eval: [QwenLM/QwQ](https://github.com/QwenLM/QwQ/tree/main/eval)
+- SWE Verified: [SWE-bench/SWE-bench](https://github.com/SWE-bench/SWE-bench)
+- Codeforces: [QwenLM/CodeElo](https://github.com/QwenLM/CodeElo)

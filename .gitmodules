@@ -4,3 +4,6 @@
 [submodule "evals/simple-evals"]
 	path = evals/benchmarks/simple-evals
 	url = https://github.com/openai/simple-evals.git
+[submodule "evals/benchmarks/CodeElo"]
+	path = evals/benchmarks/CodeElo
+	url = https://github.com/QwenLM/CodeElo.git

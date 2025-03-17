@@ -23,7 +23,8 @@ class ChatCompletionSampler(SamplerBase):
         self,
         model: str = "gpt-3.5-turbo",
         system_message: str | None = None,
-        temperature: float = 0.5,
+        temperature: float = 0.6,
+        top_p: float = 0.95,
         max_tokens: int = 1024,
         base_url: str | None = None,
         api_key: str | None = None,
@@ -36,6 +37,7 @@ class ChatCompletionSampler(SamplerBase):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.image_format = "url"
+        self.top_p = top_p
 
     def _handle_image(
         self, image: str, encoding: str = "base64", format: str = "png", fovea: int = 768
@@ -65,6 +67,7 @@ class ChatCompletionSampler(SamplerBase):
                     messages=message_list,
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
+                    top_p=self.top_p,
                 )
                 return response.choices[0].message.content
             # NOTE: BadRequestError is triggered once for MMMU, please uncomment if you are reruning MMMU
