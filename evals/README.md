@@ -27,7 +27,7 @@ The following benchmarks covered in Deepseek R1 paper are used:
 - [ ] **AlpacaEval2.0** (LC-winrate) - Evaluates using length-controlled win rate
 - [ ] **ArenaHard** (GPT-4-1106) - Challenging evaluation against GPT-4
 
-## Code Benchmarks
+## Code Benchmarks (Code generation✅, TODO: Self-repair)
 - [X] **LiveCodeBench** (Pass@1-COT) - Real-time code generation evaluation
 - [X] **Codeforces** (Percentile) - Competitive programming benchmark (percentile)
 - [X] **Codeforces** (Rating) - Competitive programming benchmark (rating)
@@ -52,3 +52,28 @@ The following benchmarks covered in Deepseek R1 paper are used:
 - LiveCodeBench, IF-Eval: [QwenLM/QwQ](https://github.com/QwenLM/QwQ/tree/main/eval)
 - SWE Verified: [SWE-bench/SWE-bench](https://github.com/SWE-bench/SWE-bench)
 - Codeforces: [QwenLM/CodeElo](https://github.com/QwenLM/CodeElo)
+
+### Run evals
+```bash
+bash evals/benchmarks/run.sh
+```
+
+
+### Results
+| Benchmark | dpsk-r1-distill-1.5b | dpsk-r1-distill-7b |
+|-----------|----------------------|---------------------|
+| MMLU | - | 67.42 |
+| MMLU-Pro | - | - |
+| DROP | - | 73.98 |
+| IF-Eval | - | - |
+| GPQA Diamond | 34.9 | 50.1 |
+| SimpleQA | - | 1.73 |
+| LiveCodeBench | - | 34.0 |
+| Codeforces (Percentile) | - | - |
+| Codeforces (Rating) | - | - |
+| SWE Verified | - | - |
+| AIME 2024 | - | - |
+| MATH-500 | - | - |
+| AMC 2023 | - | - |
+| AIME 2025 | - | - |
+| OlympiadBench | - | - |

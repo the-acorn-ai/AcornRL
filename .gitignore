@@ -52,3 +52,4 @@ build/
 **output/**/*.jsonl
 **/benchmarks/*-eval/output/*.jsonl
 evals/benchmarks/qwq-eval/data/livecodebench_v5_tests/
+evals/benchmarks/qwq-eval/eval_res/*
