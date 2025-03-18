@@ -29,9 +29,9 @@ The following benchmarks covered in Deepseek R1 paper are used:
 
 ## Code Benchmarks (Code generation✅, TODO: Self-repair)
 - [X] **LiveCodeBench** (Pass@1-COT) - Real-time code generation evaluation
-- [X] **Codeforces** (Percentile) - Competitive programming benchmark (percentile)
-- [X] **Codeforces** (Rating) - Competitive programming benchmark (rating)
-- [X] **SWE Verified** (Resolved) - Software Engineering verification
+- [ ] **Codeforces** (Percentile) - Competitive programming benchmark (percentile)
+- [ ] **Codeforces** (Rating) - Competitive programming benchmark (rating)
+- [ ] **SWE Verified** (Resolved) - Software Engineering verification
 
 ## Math Benchmark (pass@1 and con@64)
 - [X] **AIME 2024** (Pass@1) - American Invitational Mathematics Examination
@@ -55,9 +55,11 @@ The following benchmarks covered in Deepseek R1 paper are used:
 
 ### Run evals
 ```bash
-bash evals/benchmarks/run.sh
+bash evals/benchmarks/run.sh <model_name>
 ```
 
+### Settings
+We follow the Deepseek R1 paper settings for all benchmarks, where we use `temperature=0.6`, `top_p=0.95`, `max_tokens=32768`. `n_sampling=4-64` depending on the benchmark. (Math related benchmarks use `n_sampling=64`)
 
 ### Results
 | Benchmark | dpsk-r1-distill-1.5b | dpsk-r1-distill-7b |
@@ -69,9 +71,6 @@ bash evals/benchmarks/run.sh
 | GPQA Diamond | 34.9 | 50.1 |
 | SimpleQA | - | 1.73 |
 | LiveCodeBench | - | 34.0 |
-| Codeforces (Percentile) | - | - |
-| Codeforces (Rating) | - | - |
-| SWE Verified | - | - |
 | AIME 2024 | - | - |
 | MATH-500 | - | - |
 | AMC 2023 | - | - |
