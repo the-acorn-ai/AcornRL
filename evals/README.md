@@ -59,20 +59,22 @@ bash evals/benchmarks/run.sh <model_name>
 ```
 
 ### Settings
-We follow the Deepseek R1 paper settings for all benchmarks, where we use `temperature=0.6`, `top_p=0.95`, `max_tokens=32768`. `n_sampling=4-64` depending on the benchmark. (Math related benchmarks use `n_sampling=64`)
+We follow the Deepseek R1 paper settings for all benchmarks, where we use `temperature=0.6`, `top_p=0.95`, `max_tokens=32768`. `n_sampling=4-64` depending on the benchmark. (Math related benchmarks use `n_sampling=64`). For rollout engine, we support both vllm and Sglang. We suggest using sglang since it supports data parallelism off-the-shelf which gives better rollout efficiency.
 
 ### Results
 | Benchmark | dpsk-r1-distill-1.5b | dpsk-r1-distill-7b |
 |-----------|----------------------|---------------------|
-| MMLU | - | 67.42 |
+| MMLU | 49.05 | 67.42 |
 | MMLU-Pro | - | - |
-| DROP | - | 73.98 |
-| IF-Eval | - | - |
+| DROP | 53.36 | 73.98 |
+| IF-Eval | 39.37 | 44.36 |
 | GPQA Diamond | 34.9 | 50.1 |
-| SimpleQA | - | 1.73 |
-| LiveCodeBench | - | 34.0 |
-| AIME 2024 | - | - |
-| MATH-500 | - | - |
-| AMC 2023 | - | - |
-| AIME 2025 | - | - |
-| OlympiadBench | - | - |
+| SimpleQA | 1.00 | 1.92 |
+| LiveCodeBench | 14.3 | 34.4 |
+| AIME 2024 (pass@1) | - | 46.7 |
+| AIME 2024 (con@64) | - | 76.67 |
+| AIME 2025 (pass@1) | - | 33.3 |
+| AIME 2025 (con@64) | - | 56.67 |
+| MATH-500 (pass@1) | - | 92.6 |
+| AMC 2023 (pass@1) | - | - |
+| OlympiadBench (pass@1) | - | 57.9 |

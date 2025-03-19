@@ -59,12 +59,16 @@ mkdir -p eval_res
 python ./eval/eval.py \
     --input_path ./output/aime24_bz64.jsonl \
     --cache_path ./eval_res/aime24_bz64.jsonl \
-    --task_name "math_opensource/aime24" > ./eval_res/aime24_bz64_res_result.txt
+    --task_name "math_opensource/aime24" \
+    --consensus \
+    > ./eval_res/aime24_bz64_res_result.txt
 
 python ./eval/eval.py \
     --input_path ./output/aime25_bz64.jsonl \
     --cache_path ./eval_res/aime25_bz64.jsonl \
-    --task_name "math_opensource/aime25" > ./eval_res/aime25_bz64_res_result.txt
+    --task_name "math_opensource/aime25" \
+    --consensus \
+    > ./eval_res/aime25_bz64_res_result.txt
 
 python ./data/process_data.py
 
