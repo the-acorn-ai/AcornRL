@@ -9,6 +9,7 @@ from .math_eval import MathEval
 from .mgsm_eval import MGSMEval
 from .mmlu_eval import MMLUEval
 from .simpleqa_eval import SimpleQAEval
+from .mmlu_pro_eval import MMLUProEval
 from .sampler.chat_completion_sampler import (
     OPENAI_SYSTEM_MESSAGE_API,
     OPENAI_SYSTEM_MESSAGE_CHATGPT,
@@ -144,6 +145,8 @@ def main():
         match eval_name:
             case "mmlu":
                 return MMLUEval(num_examples=1 if debug_mode else num_examples)
+            case "mmlu_pro":
+                return MMLUProEval(num_examples=1 if debug_mode else num_examples)
             case "math":
                 return MathEval(
                     equality_checker=equality_checker,
