@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--input_path", type=str, required=True, help="Path to input jsonl file")
     parser.add_argument("--cache_path", type=str, required=True, help="Path to save cache results")
     parser.add_argument("--task_name", type=str, required=True, help="Task should be in ['math_opensource/aime24', 'math_opensource/aime25' ,'livecodebench', 'ifeval']")
+    parser.add_argument("--consensus", type=bool, default=False, help="Whether to use consensus")
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.cache_path), exist_ok=True)
@@ -28,8 +29,11 @@ def main():
         item["task"] = args.task_name
         temp = get_after_think(item['gen'][0])
         item['gen'][0] = temp
+    if args.consensus and (not "math_opensource" in args.task_name):
+        raise ValueError("Consensus is currently only supported for math_opensource")
+    
     if "math_opensource" in args.task_name:
-        acc = compute_scores_math_opensource(data, args.cache_path)
+        acc = compute_scores_math_opensource(data, args.cache_path, args.consensus)
         print(f"Task: {args.task_name}, Accuracy: {acc}")
     elif "livecodebench" in args.task_name:
         acc = compute_scores_livecodebench_v5(data, args.cache_path)

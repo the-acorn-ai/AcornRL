@@ -50,7 +50,7 @@ def work(args):
         
     return i, float(result), prediction
 
-def compute_scores(jobs, cache_path):
+def compute_scores(jobs, cache_path, consensus=False):
     with tqdm(total=len(jobs)) as pbar:
         with ProcessPool(max_workers=20, initializer=init_fn) as pool:
             future = pool.map(work, list(enumerate(jobs)), timeout=10)
@@ -75,10 +75,116 @@ def compute_scores(jobs, cache_path):
                 job['extracted_answer'] = "Timeout"
                 job['timeout_cnt'] = 1
     save_cache(jobs, cache_path)
-    return mean(x['accuracy'] for x in jobs)
+    if not consensus:
+        return mean(x['accuracy'] for x in jobs)
+    else:
+        cache_path = cache_path.replace(".jsonl", "_consensus.jsonl")
+        # Group by prompt and take majority vote
+        prompt_groups = {}
+        for job in jobs:
+            prompt = job['prompt']
+            if prompt not in prompt_groups:
+                prompt_groups[prompt] = {
+                    'prompt': prompt,
+                    'answer': job['answer'],
+                    'task': job['task'],
+                    'extracted_answer': [],
+                    'accuracy': []
+                }
+            prompt_groups[prompt]['extracted_answer'].append(job['extracted_answer'])
+            prompt_groups[prompt]['accuracy'].append(job['accuracy'])
+        # Create new jobs list with consolidated prompt groups
+        new_jobs = []
+        for prompt, group_data in prompt_groups.items():
+            # Count occurrences of each answer
+            answer_counts = {}
+            for answer in group_data['extracted_answer']:
+                if answer not in answer_counts:
+                    answer_counts[answer] = 0
+                answer_counts[answer] += 1
+            
+            # Find the majority answer
+            majority_answer = max(answer_counts.items(), key=lambda x: x[1])[0]
+            
+            # Check if the majority answer is correct
+            correct = False
+            for i, answer in enumerate(group_data['extracted_answer']):
+                if answer == majority_answer:
+                    correct = group_data['accuracy'][i]
+                    break
+            
+            # Create a new consolidated job
+            new_job = {
+                'prompt': group_data['prompt'],
+                'answer': group_data['answer'],
+                'task': group_data['task'],
+                'extracted_answer': group_data['extracted_answer'],
+                'consensus_answer': majority_answer,
+                'consensus_accuracy': float(correct)
+            }
+            new_jobs.append(new_job)
+        
+        # Save the consolidated jobs
+        save_cache(new_jobs, cache_path)
+        return mean(x['consensus_accuracy'] for x in new_jobs)
 
 def save_cache(jobs, cache_path):
     with open(cache_path, "w") as g:
         for job in jobs:
             g.write(json.dumps(job, ensure_ascii=False) + "\n")
             g.flush()
+
+if __name__ == "__main__":
+    cache_path = "eval_res/aime25_bz64.jsonl"
+    jobs = []
+    with open(cache_path, "r") as f:
+        for line in f:
+            jobs.append(json.loads(line))
+    
+    cache_path = cache_path.replace(".jsonl", "_consensus.jsonl")
+    # Group by prompt and take majority vote
+    prompt_groups = {}
+    for job in jobs:
+        prompt = job['prompt']
+        if prompt not in prompt_groups:
+            prompt_groups[prompt] = {
+                'prompt': prompt,
+                'answer': job['answer'],
+                'task': job['task'],
+                'extracted_answer': [],
+                'accuracy': []
+            }
+        prompt_groups[prompt]['extracted_answer'].append(job['extracted_answer'])
+        prompt_groups[prompt]['accuracy'].append(job['accuracy'])
+    # Create new jobs list with consolidated prompt groups
+    new_jobs = []
+    for prompt, group_data in prompt_groups.items():
+        # Count occurrences of each answer
+        answer_counts = {}
+        for answer in group_data['extracted_answer']:
+            if answer not in answer_counts:
+                answer_counts[answer] = 0
+            answer_counts[answer] += 1
+        
+        # Find the majority answer
+        majority_answer = max(answer_counts.items(), key=lambda x: x[1])[0]
+        
+        # Check if the majority answer is correct
+        correct = False
+        for i, answer in enumerate(group_data['extracted_answer']):
+            if answer == majority_answer:
+                correct = group_data['accuracy'][i]
+                break
+        
+        # Create a new consolidated job
+        new_job = {
+            'prompt': group_data['prompt'],
+            'answer': group_data['answer'],
+            'task': group_data['task'],
+            'extracted_answer': group_data['extracted_answer'],
+            'consensus_answer': majority_answer,
+            'consensus_accuracy': float(correct)
+        }
+        new_jobs.append(new_job)
+    save_cache(new_jobs, cache_path)
+    print(mean(x['consensus_accuracy'] for x in new_jobs))

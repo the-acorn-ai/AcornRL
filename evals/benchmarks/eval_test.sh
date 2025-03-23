@@ -11,17 +11,17 @@ EVAL_ENGINE="sglang" # either vllm or sglang
 
 # SimpleEvals: gpqa, mmlu, drop, simpleqa
 # cd ..
-# if [ "$EVAL_ENGINE" == "vllm" ]; then
-#     TENSOR_PARALLEL_SIZE=$(echo $CUDA_VISIBLE_DEVICES | tr -cd ',' | wc -c)
-#     TENSOR_PARALLEL_SIZE=$((TENSOR_PARALLEL_SIZE + 1))
-#     CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES vllm serve $MODEL_NAME \
-#         --port 8050 --tensor-parallel-size $TENSOR_PARALLEL_SIZE > vllm.log 2>&1 &
-# elif [ "$EVAL_ENGINE" == "sglang" ]; then
-#     DATA_PARALLEL_SIZE=$(echo $CUDA_VISIBLE_DEVICES | tr -cd ',' | wc -c)
-#     DATA_PARALLEL_SIZE=$((DATA_PARALLEL_SIZE + 1))
-#     CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES python -m sglang.launch_server --model-path $MODEL_NAME \
-#         --host 127.0.0.1 --dp $DATA_PARALLEL_SIZE --port 8050 > sglang.log 2>&1 &
-# fi
+if [ "$EVAL_ENGINE" == "vllm" ]; then
+    TENSOR_PARALLEL_SIZE=$(echo $CUDA_VISIBLE_DEVICES | tr -cd ',' | wc -c)
+    TENSOR_PARALLEL_SIZE=$((TENSOR_PARALLEL_SIZE + 1))
+    CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES vllm serve $MODEL_NAME \
+        --port 8050 --tensor-parallel-size $TENSOR_PARALLEL_SIZE > vllm.log 2>&1 &
+elif [ "$EVAL_ENGINE" == "sglang" ]; then
+    DATA_PARALLEL_SIZE=$(echo $CUDA_VISIBLE_DEVICES | tr -cd ',' | wc -c)
+    DATA_PARALLEL_SIZE=$((DATA_PARALLEL_SIZE + 1))
+    CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES python -m sglang.launch_server --model-path $MODEL_NAME \
+        --host 127.0.0.1 --dp $DATA_PARALLEL_SIZE --port 8050 > sglang.log 2>&1 &
+fi
 
 VLLM_BASE_URL="http://127.0.0.1:8050/v1"
 # Wait for vLLM server to start up
@@ -43,9 +43,9 @@ python -m simple-evals.simple_evals \
     --model_name_or_path $MODEL_NAME \
     --base_url $VLLM_BASE_URL \
     --max_tokens 32768 \
-    --tasks mmlu_pro
+    --tasks gpqa mmlu drop simpleqa
 
-# pkill -f "vllm serve $MODEL_NAME --port 8050"
+pkill -f "vllm serve $MODEL_NAME --port 8050"
 
 echo "Finished all evaluations!"
 

@@ -17,3 +17,12 @@
 
 ### Eval
 - Eval Benchmarks Implementation (Check [evals](evals/README.md) for benchmarks and guidelines)
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 python -m sglang.launch_server --model-path deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
+ --host 0.0.0.0 --dp 4 --port 8030
+```
+
+```bash
+
+```

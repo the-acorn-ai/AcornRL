@@ -22,10 +22,30 @@ C) {C}
 D) {D}
 """.strip()
 
+QUERY_TEMPLATE_MULTICHOICE_PRO = """
+Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCDEFGHIJ. Think step by step before answering.
+
+{question}
+
+A) {options[0]}
+B) {options[1]}
+C) {options[2]}
+D) {options[3]}
+E) {options[4]}
+F) {options[5]}
+G) {options[6]}
+H) {options[7]}
+I) {options[8]}
+J) {options[9]}
+""".strip()
+
 ANSWER_PATTERN_MULTICHOICE = r"(?i)Answer[ \t]*:[ \t]*\$?([A-D])\$?"
 ANSWER_PATTERN = r"(?i)Answer\s*:\s*([^\n]+)"
 MULTILINGUAL_ANSWER_PATTERN_TEMPLATE = (
     "(?i){}[ \t]*([A-D]|[أ-د]|[অ]|[ব]|[ড]|[ঢ]|[Ａ]|[Ｂ]|[Ｃ]|[Ｄ])"
+)
+MULTILINGUAL_ANSWER_PATTERN_TEMPLATE_PRO = (
+    "(?i){}[ \t]*([A-J]|[أ-ي]|[অ-ঝ]|[Ａ-Ｊ])"
 )
 # All the different ways "Answer" is written in different languages
 MULTILINGUAL_ANSWER_REGEXES = [
@@ -151,6 +171,29 @@ HTML_JINJA = """
 
 def format_multichoice_question(row):
     return QUERY_TEMPLATE_MULTICHOICE.format(**row)
+
+def format_multichoice_question_pro(row):
+    """Format a multiple choice question with a variable number of options."""
+    options = row["options"]
+    option_count = len(options)
+    
+    # Generate option lines dynamically based on available options
+    option_letters = "ABCDEFGHIJ"
+    option_lines = []
+    for i in range(option_count):
+        option_lines.append(f"{option_letters[i]}) {options[i]}")
+    
+    formatted_options = "\n".join(option_lines)
+    
+    template = f"""
+Answer the following multiple choice question. The last line of your response should be of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of {option_letters[:option_count]}. Think step by step before answering.
+
+{row["question"]}
+
+{formatted_options}
+""".strip()
+    
+    return template
 
 
 def check_equality(sampler: SamplerBase, expr1: str, expr2: str):
