@@ -12,6 +12,10 @@ requests
 tqdm
 concurrent-futures
 logging
+numpy
+tqdm
+datasets
+peft
 
 # File format handling
 json

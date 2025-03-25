@@ -63,9 +63,9 @@ for ((i=1; i<=NUM_ITERATIONS; i++)); do
         --env-ids "${ENV_IDS[@]}" \
         --output-dir "$RUN_FOLDER" \
         --iter $i \
-        --run-eval \
-        --eval-env-ids "${EVAL_ENV_IDS[@]}" \
-        --eval-episodes $EVAL_EPISODES
+        #--run-eval \
+        #--eval-env-ids "${EVAL_ENV_IDS[@]}" \
+        #--eval-episodes $EVAL_EPISODES
 
     echo "[Training] Running training script..."
     
