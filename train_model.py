@@ -48,9 +48,10 @@ def tokenize_and_mask(batch, tokenizer, gamma, max_seq_len=1024):
 
     # discounted reward: final_reward * (gamma^(full_length - step))
     # advantage = avg_reward + final_reward
-    tokenized_full["reward"] = np.array(batch["final_reward"]) * gamma ** (
-        np.array(batch["full_length"]) - np.array(batch["step"])
-    )
+    tokenized_full["reward"] = batch["final_reward"] 
+    # np.array(batch["final_reward"]) * gamma ** (
+    #     np.array(batch["full_length"]) - np.array(batch["step"])
+    # )
 
     return tokenized_full
 
