@@ -19,16 +19,16 @@ mkdir -p "$DATA_FOLDER" "$CHECKPOINT_FOLDER" "$LOG_FOLDER"
 
 
 # Number of iterations for training loop
-NUM_ITERATIONS=15  # Change as needed
+NUM_ITERATIONS=1  # Change as needed
 
 # List of environments (passed as args)
 ENV_IDS=("TicTacToe-v0")
 EVAL_ENV_IDS=("ConnectFour-v0")
-EVAL_EPISODES=10
+EVAL_EPISODES=128 #0 #20
 
 # Maximum sequence length
-MAX_SEQ_LEN=8192
-EPISODES_PER_ITER=100 #100 #100
+MAX_SEQ_LEN=4096
+EPISODES_PER_ITER=16384 #512 #100 #100
 current_checkpoint="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
 # Number of GPUs to use (set dynamically)
@@ -70,12 +70,12 @@ for ((i=1; i<=NUM_ITERATIONS; i++)); do
     echo "[Training] Running training script..."
     
     # Run training script (modify with actual script path & arguments)
-    deepspeed --num_gpus $NUM_GPUS train_lora_model.py \
-        --max-seq-len $MAX_SEQ_LEN \
-        --output-dir "$RUN_FOLDER" \
-        --iter $i
+    # deepspeed --num_gpus $NUM_GPUS train_model.py \
+    #     --max-seq-len $MAX_SEQ_LEN \
+    #     --output-dir "$RUN_FOLDER" \
+    #     --iter $i
 
-    current_checkpoint="$CHECKPOINT_FOLDER/$i/model"
+    # current_checkpoint="$CHECKPOINT_FOLDER/$i/model"
 
     echo "=== Completed Iteration $i ==="
 done

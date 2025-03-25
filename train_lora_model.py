@@ -182,8 +182,8 @@ def main():
         save_steps=100,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=16,
-        learning_rate=2e-4,        # Higher learning rate for LoRA fine-tuning
-        num_train_epochs=5,
+        learning_rate=2e-5,        # Higher learning rate for LoRA fine-tuning
+        num_train_epochs=2,
         fp16=False,
         bf16=True,
         logging_dir="./logs",
