@@ -5,7 +5,7 @@ import time, requests, json, logging, os
 from typing import Dict, Tuple, List, Optional, Any
 
 
-STANDARD_GAME_PROMPT = "You are a competitive game player. Make sure you read the game instructions carefully, and always follow the required format."
+STANDARD_GAME_PROMPT = "You are a competitive game player. Make sure you read the game instructions carefully, and always follow the required format. On your turn, first think about what you want to do, and then return the next move in the correct format."
 
 
 class VLLMInferenceClient:
@@ -52,79 +52,26 @@ class VLLMInferenceClient:
         temperature: float = 0.7,
         top_p: float = 0.9,
         do_sample: bool = True,
-        **kwargs
-    ) -> Dict:  # Updated return type
-        formatted_input = self.format_observation(prompt)
+    ) -> Tuple[str, str, str]: 
+        formatted_observation = self.format_observation(prompt)
 
-        # Prepare request to vLLM
-        url = f"{self.url}/generate"  # Fixed variable
-        payload = {
-            "prompt": formatted_input,
-            "max_tokens": max_new_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
-            "stop": [],
-            "n": 1,
-            "stream": False,
-        }
+        # call the model
+        response = requests.post(
+            url=f"{self.url}/generate", 
+            json={
+                "prompt": formatted_observation, "max_tokens": max_new_tokens, "temperature": temperature,
+                "top_p": top_p, "stop": [], "n": 1, "stream": False}
+        )
 
-        # Add any additional parameters
-        for key, value in kwargs.items():
-            if key not in payload:  # Fixed typo
-                payload[key] = value 
-
-
-        return_dict = {
-            "reasoning": None,
-            "answer": None,
-            "metrics": {}
-        }
-
-        # Make the API call
-        try:
-            start_time = time.time()
-            response = requests.post(url, json=payload)
-            generation_time = time.time() - start_time 
-
-            if response.status_code == 200:
-                data = response.json()
-                generated_text = data["text"][0]
-
-                # Get token count from response if available, otherwise estimate
-                if "usage" in data:
-                    # Some vLLM APIs return token counts directly
-                    tokens_generated = data["usage"]["completion_tokens"]
-                else:
-                    # Rough estimation (can be replaced with a proper tokenizer)
-                    tokens_generated = len(generated_text.split()) * 1.3  # Rough estimate
-                
-
-                # Extract reasoning and answer with regex
-                # if no answer, return full response as answer
-                reasoning, answer = self._extract_reasoning_and_answer(generated_text)
-                return_dict["reasoning"] = reasoning 
-                return_dict["answer"] = answer 
-                return_dict["metrics"]["completion_tokens"] = tokens_generated
-                return_dict["metrics"]["completion_time"] = generation_time
-
-                self.logger.info(f"Generated response in {generation_time:.2f} seconds")
-                
-                return return_dict 
-            else:
-                self.logger.error(f"Request failed with status code {response.status_code}: {response.text}")
-                return return_dict
-        except Exception as e:
-            self.logger.error(f"Error during text generation: {str(e)}")
-            return return_dict
+        # extract reasoning and action
+        reasoning, answer = self._extract_reasoning_and_answer(response.json()["text"][0])
+        return formatted_observation, reasoning, answer
 
 
 
     def _extract_reasoning_and_answer(self, text: str) -> Tuple[str, str]:
-        # Pattern to match content within <think>...</think> tags
         think_pattern = r'<think>(.*?)</think>'
-        # Pattern to match content within <answer>...</answer> tags
         answer_pattern = r'<answer>(.*?)</answer>'
-        # Pattern to match content within square brackets [...]
         bracket_pattern = r'\[(.*?)\]'
         
         # Search for reasoning within <think> tags
@@ -135,22 +82,13 @@ class VLLMInferenceClient:
         answer_match = re.search(answer_pattern, text, re.DOTALL)
         
         if answer_match:
-            # If <answer> tags are found, extract the content
             answer = answer_match.group(1).strip()
         elif think_match:
-            # If </think> tag is present but no <answer> tag, return everything after </think>
             think_end_pos = text.find('</think>') + len('</think>')
             answer = text[think_end_pos:].strip()
         else:
-            # If no <think> or <answer> tags, look for content in square brackets
-            bracket_matches = re.findall(bracket_pattern, text, re.DOTALL)
-            if bracket_matches:
-                # If square brackets are found, take the last occurrence
-                answer = bracket_matches[-1].strip()
-            else:
-                # If no square brackets either, return the full text as the answer
-                answer = text.strip()
-                            
+            answer_words = text.split()[-100:]
+            answer = " ".join(answer_words)
         return reasoning, answer
 
 
@@ -210,7 +148,7 @@ class VLLMServerManager:
                 "--gpu-memory-utilization", "0.9",
                 "--max-model-len", str(self.max_seq_len),
                 "--trust-remote-code",
-                "--max-seq-len-to-capture", "48000"
+                "--max-num-seqs", "64"
             ]
 
             
@@ -245,7 +183,7 @@ class VLLMServerManager:
 
 
 
-    def _verify_server(self, port: int, max_attempts: int = 12, timeout: int = 5) -> bool:
+    def _verify_server(self, port: int, max_attempts: int = 30, timeout: int = 5) -> bool:
         """Verify a single server is running."""
         url = f"http://localhost:{port}/health"
         

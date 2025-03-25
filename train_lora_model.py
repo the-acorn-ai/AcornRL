@@ -1,4 +1,4 @@
-import os, json, argparse, torch
+import os, json, time,  argparse, torch
 import numpy as np
 from datasets import Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
@@ -8,7 +8,7 @@ import torch.nn.functional as F
 
 # local imports 
 from acornrl.trainers import ReinforceTrainer
-
+from acornrl.reward_shaping import reshape_rewards
 
 
 def tokenize_and_mask(batch, tokenizer, gamma, max_seq_len=1024):
@@ -44,6 +44,7 @@ def tokenize_and_mask(batch, tokenizer, gamma, max_seq_len=1024):
     tokenized_full["labels"] = labels
 
     # discounted reward: final_reward * (gamma^(full_length - step))
+    # advantage = avg_reward + final_reward
     tokenized_full["reward"] = np.array(batch["final_reward"]) * gamma ** (
         np.array(batch["full_length"]) - np.array(batch["step"])
     )
@@ -68,6 +69,11 @@ def main():
     parser.add_argument("--local_rank", type=int, default=0, help="(For deepspeed) local rank.")
     # parser.add_argument("--data-file", type=str, required=True, help=".json file of training data")
 
+    parser.add_argument("--normalize-rewards", action="store_true", help="Whether the reward should be normalized")
+    parser.add_argument("--reward-transformations", nargs="+", required=False, default=None, help="List of reward transformations")
+
+
+
     args = parser.parse_args()
 
 
@@ -82,7 +88,8 @@ def main():
 
 
     # check whether lora adapter already exists
-    first_training = not (os.path.exists(lora_adapter_path) and len(os.listdir(lora_adapter_path))>0) 
+    # first_training = not (os.path.exists(lora_adapter_path) and len(os.listdir(lora_adapter_path))>0) 
+    first_training = args.iter==1
 
     # 2) Check if there is data 
     if not os.path.exists(training_data_path):
@@ -100,6 +107,27 @@ def main():
 
 
     print(f"[Training] Found {len(data_list)} data points.")
+
+    # # # get average reward
+    # # avg_reward = np.mean([a["final_reward"] for a in data_list])
+    # def normalize_rewards(reward, avg_reward, std_reward):
+    #     # return (advantages - np.mean(advantages)) / (np.std(advantages) + 1e-8)
+    #     return (reward - avg_reward) / (std_reward + 1e-8)
+
+    # all_reward = [a["final_reward"] for a in data_list]
+    # # update the final reward to be normalized
+    # for idx in range(len(data_list)):
+    #     data_list[idx]["final_reward"] = normalize_rewards(
+    #         reward=data_list[idx]["final_reward"],
+    #         avg_reward=np.mean(all_reward),
+    #         std_reward=np.std(all_reward)
+    #     )
+
+    data_list = reshape_rewards(
+        data_list=data_list, 
+        transformations=args.reward_transformations,
+        normalize=args.normalize_rewards
+    )
 
 
     # 3) Convert to Dataset
@@ -142,7 +170,8 @@ def main():
     # Prepare model fro training
     model = get_peft_model(base_model, lora_config)
     if not first_training:
-        model.load_adapter(lora_adapter_path, adapter_name="default")
+        prev_lora_adapter_path = os.path.join(args.output_dir, "checkpoints", f"{args.iter-1}", "lora_adapter")
+        model.load_adapter(prev_lora_adapter_path, adapter_name="default", local_files_only=True)
         model.set_adapter("default")
 
 
@@ -153,8 +182,8 @@ def main():
         save_steps=100,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=16,
-        learning_rate=2e-4,        # Higher learning rate for LoRA fine-tuning
-        num_train_epochs=5,
+        learning_rate=2e-5,        # Higher learning rate for LoRA fine-tuning
+        num_train_epochs=2,
         fp16=False,
         bf16=True,
         logging_dir="./logs",
@@ -184,6 +213,7 @@ def main():
     # 9) Save the LoRA adapter model
     model.save_pretrained(lora_adapter_path)
     print(f"[Training] LoRA adapter saved to {lora_adapter_path}")
+    time.sleep(5)
 
     # merge lora into main model 
 
