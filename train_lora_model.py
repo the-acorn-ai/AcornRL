@@ -120,6 +120,11 @@ def main():
     parser.add_argument("--lm-sft-coeff", type=float, default=0.1, help="Weight for supervised fine-tuning loss")
     parser.add_argument("--lm-kl-coeff", type=float, default=0.01, help="Weight for KL divergence penalty")
     parser.add_argument("--clip-range", type=float, default=0.2, help="Clip range for importance ratio")
+    
+    # Add wandb logging arguments
+    parser.add_argument("--use-wandb", action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb-project", type=str, default="lora-training", help="W&B project name")
+    parser.add_argument("--wandb-name", type=str, default=None, help="W&B run name (defaults to timestamp if not provided)")
 
     args = parser.parse_args()
 
@@ -246,7 +251,7 @@ def main():
         "fp16": False,
         "bf16": True,
         "logging_dir": "./logs",
-        "report_to": "none",
+        "report_to": "wandb" if args.use_wandb else "none",
         "remove_unused_columns": False,
         "gradient_checkpointing": True,
         "optim": "adamw_hf", #"adamw_torch",
@@ -255,8 +260,22 @@ def main():
         "per_device_eval_batch_size": 1,
         "dataloader_pin_memory": False,
         "dataloader_num_workers": 0,
-        "logging_steps": 50
+        "logging_steps": 1
     }
+
+    # Configure wandb if enabled
+    if args.use_wandb:
+        import wandb
+        
+        # Set up wandb run name if not provided
+        run_name = args.wandb_name if args.wandb_name else f"lora-training-iter-{args.iter}-{time.strftime('%Y%m%d-%H%M%S')}"
+        
+        # Initialize wandb with training_args
+        wandb.init(
+            project=args.wandb_project,
+            name=run_name,
+            config=training_args
+        )
 
     # Get the appropriate trainer and args
     trainer, training_args = get_trainer_and_args(
@@ -276,6 +295,11 @@ def main():
     # 9) Save the LoRA adapter model
     model.save_pretrained(lora_adapter_path)
     print(f"[Training] LoRA adapter saved to {lora_adapter_path}")
+    
+    # Finish wandb run if enabled
+    if args.use_wandb:
+        wandb.finish()
+        
     time.sleep(5)
 
     # merge lora into main model 

@@ -87,4 +87,17 @@ class SPAGTrainer(Trainer):
         # Combine losses with weighting
         weighted_loss = self.args.lm_sft_coeff * sft_loss + ppo_value
 
+        # Log metrics to wandb
+        if self.args.report_to and "wandb" in self.args.report_to:
+            import wandb
+            wandb.log({
+                "train/sft_loss": sft_loss.item() if sft_size > 0 else 0,
+                "train/ppo_loss": ppo_value.item() if sample_size > 0 else 0,
+                "train/weighted_loss": weighted_loss.item(),
+                "train/kl_div_mean": kl_div.mean().item(),
+                "train/importance_ratio_mean": importance_ratio.mean().item(),
+                "train/advantages_mean": advantages.mean().item(),
+                "train/sft_sample_ratio": sft_size / (sft_size + sample_size) if (sft_size + sample_size) > 0 else 0,
+            })
+
         return (weighted_loss, outputs) if return_outputs else weighted_loss
