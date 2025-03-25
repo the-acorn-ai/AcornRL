@@ -22,3 +22,6 @@ json
 
 # Optional but recommended
 nvidia-cuda-runtime
+
+# logging
+wandb
