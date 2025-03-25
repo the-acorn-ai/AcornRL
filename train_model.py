@@ -7,7 +7,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
 import torch.nn.functional as F
 from transformers import Trainer
 # local imports 
-from acornrl.trainers import ReinforceTrainer
+from acornrl.trainers import ReinforceTrainer, SPAGTrainer, SPAGTrainingArguments
 from acornrl.reward_shaping import reshape_rewards
 
 import gc
@@ -55,10 +55,59 @@ def tokenize_and_mask(batch, tokenizer, gamma, max_seq_len=1024):
 
     return tokenized_full
 
+def spag_collator(batch, tokenizer, gamma, max_seq_len=1024):
+    results = tokenize_and_mask(batch, tokenizer, gamma, max_seq_len)
+    sft_mask = [0. for item in results['input_ids']]
+    weights = [1. for item in results['input_ids']]
+    results['sft_mask'] = torch.Tensor(sft_mask).float()
+    results['weights'] = torch.Tensor(weights).float()
+    return results
+
+def get_trainer_and_args(train_method, model, base_args, dataset, tokenizer, **kwargs):
+    """Factory function to create the appropriate trainer and args based on method."""
+    if train_method == "reinforce":
+        train_args = TrainingArguments(**base_args)
+        return ReinforceTrainer(
+            model=model,
+            args=train_args,
+            train_dataset=dataset,
+            tokenizer=tokenizer
+        ), train_args
+    elif train_method == "spag":
+        spag_args = SPAGTrainingArguments(
+            lm_sft_coeff=kwargs.get('lm_sft_coeff', 0.1),
+            lm_kl_coeff=kwargs.get('lm_kl_coeff', 0.01),
+            clip_range=kwargs.get('clip_range', 0.2),
+            **base_args
+        )
+        return SPAGTrainer(
+            model=model,
+            args=spag_args,
+            train_dataset=dataset,
+            tokenizer=tokenizer
+        ), spag_args
+    else:
+        raise ValueError(f"Unknown training method: {train_method}")
+
+def get_data_processor(train_method, tokenizer, gamma, max_seq_len):
+    """Returns the appropriate data processing function based on method."""
+    if train_method == "spag":
+        return lambda batch: spag_collator(batch, tokenizer, gamma, max_seq_len)
+    else:
+        return lambda batch: tokenize_and_mask(batch, tokenizer, gamma, max_seq_len)
+
+def get_keep_columns(train_method):
+    """Returns the columns to keep based on training method."""
+    if train_method == "spag":
+        return ["input_ids", "attention_mask", "labels", "reward", "sft_mask", "weights"]
+    else:
+        return ["input_ids", "attention_mask", "labels", "reward"]
+
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Full fine-tuning on collected traces.")
     
+    parser.add_argument("--model-path", type=str, help="Model path", default="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
     parser.add_argument("--gamma", type=float, required=False, default=0.99, help="Gamma time discounting of rewards")
     parser.add_argument("--max-seq-len", type=int, required=True, help="Maximum sequence length")
 
@@ -69,6 +118,16 @@ def main():
 
     parser.add_argument("--normalize-rewards", action="store_true", help="Whether the reward should be normalized")
     parser.add_argument("--reward-transformations", nargs="+", required=False, default=None, help="List of reward transformations")
+    parser.add_argument("--train-method", type=str, default="reinforce", help="Training method", choices=["reinforce", "spag"])
+    
+    parser.add_argument("--lm-sft-coeff", type=float, default=0.1, help="Weight for supervised fine-tuning loss")
+    parser.add_argument("--lm-kl-coeff", type=float, default=0.01, help="Weight for KL divergence penalty")
+    parser.add_argument("--clip-range", type=float, default=0.2, help="Clip range for importance ratio")
+    
+    # Add wandb logging arguments
+    parser.add_argument("--use-wandb", action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb-project", type=str, default="full-training", help="W&B project name")
+    parser.add_argument("--wandb-name", type=str, default=None, help="W&B run name (defaults to timestamp if not provided)")
 
     args = parser.parse_args()
 
@@ -79,18 +138,15 @@ def main():
     model_output_path = os.path.join(args.output_dir, "checkpoints", f"{args.iter}", "model")
     os.makedirs(model_output_path, exist_ok=True)
 
-
     # Determine whether to load from previous checkpoint
     first_training = args.iter == 1
     prev_model_path = os.path.join(args.output_dir, "checkpoints", f"{args.iter-1}", "model")
-    model_path = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B" if first_training else prev_model_path
-
+    model_path = args.model_path if first_training else prev_model_path
 
     # load the data
     training_data_path = os.path.join(args.output_dir, "data", f"train_{args.iter}.csv")
     df = pd.read_csv(training_data_path)
     print(len(df))
-    # exit()
 
     episodes_with_reward1 = df.loc[df["final_reward"] == 1, "episode_id"].unique()
     df_filtered = df[df["episode_id"].isin(episodes_with_reward1)]
@@ -104,28 +160,34 @@ def main():
         return
     print(f"[Training] Found {len(df)} data points.")
 
-    dataset = Dataset.from_pandas(df)
+    # Apply reward transformations if specified
+    if args.reward_transformations or args.normalize_rewards:
+        data_list = df.to_dict('records')
+        data_list = reshape_rewards(
+            data_list=data_list, 
+            transformations=args.reward_transformations,
+            normalize=args.normalize_rewards
+        )
+        df = pd.DataFrame(data_list)
 
+    dataset = Dataset.from_pandas(df)
 
     # Set up the tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    def _map_fn(batch):
-        # Reduce sequence length to save memory
-        return tokenize_and_mask(batch, tokenizer, gamma=args.gamma, max_seq_len=args.max_seq_len)
-
-    dataset = dataset.map(_map_fn, batched=True)
-    keep_cols = ["input_ids", "attention_mask", "labels", "reward"]
+    # Get the appropriate data processor based on method
+    data_processor = get_data_processor(args.train_method, tokenizer, args.gamma, args.max_seq_len)
+    dataset = dataset.map(data_processor, batched=True)
+    
+    # Get columns to keep based on method
+    keep_cols = get_keep_columns(args.train_method)
     remove_cols = set(dataset.column_names) - set(keep_cols)
     dataset = dataset.remove_columns(remove_cols)
 
-
     print(dataset)
     print(len(dataset))
-    # exit()
-
 
     # Load the model
     print(f"[Training] Loading model from {model_path}")
@@ -134,35 +196,65 @@ def main():
     # Enable gradient checkpointing for memory efficiency
     model.gradient_checkpointing_enable()
 
-    # Training arguments
-    training_args = TrainingArguments(
-        output_dir=model_output_path,
-        save_strategy="no",
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=16,  # Increased for full fine-tuning
-        learning_rate=1e-5,             # Lower learning rate for full fine-tuning
-        num_train_epochs=3,
-        fp16=False,
-        bf16=True,
-        logging_dir="./logs",
-        report_to="none",
-        remove_unused_columns=False,
-        gradient_checkpointing=True,
-        optim="adamw_torch",            # Using PyTorch's implementation to avoid deprecation warning
-        deepspeed="./acornrl/deepspeed_configs/ds_config_fp16.json",
-        # Memory optimizations
-        per_device_eval_batch_size=1,
-        dataloader_pin_memory=False,
-        dataloader_num_workers=0,
-        logging_steps=10,               # More frequent logging
-        # save_strategy="epoch"
-    )
+    # 6.1) Add reference model if SPAG
+    if args.train_method == "spag":
+        ref_model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch.bfloat16,
+        )
+        if hasattr(ref_model, "ref_model"):
+            del ref_model.ref_model
+        for param in ref_model.parameters():
+            param.requires_grad = False
 
-    trainer = ReinforceTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=dataset,
-        tokenizer=tokenizer
+        model.ref_model = ref_model
+
+    # Configure wandb if enabled
+    if args.use_wandb:
+        import wandb
+        
+        # Set up wandb run name if not provided
+        run_name = args.wandb_name if args.wandb_name else f"full-training-iter-{args.iter}-{time.strftime('%Y%m%d-%H%M%S')}"
+        
+        # Initialize wandb
+        wandb.init(
+            project=args.wandb_project,
+            name=run_name
+        )
+
+    # Training arguments
+    training_args_dict = {
+        "output_dir": model_output_path,
+        "save_strategy": "no",
+        "per_device_train_batch_size": 1,
+        "gradient_accumulation_steps": 16,  # Increased for full fine-tuning
+        "learning_rate": 1e-5,             # Lower learning rate for full fine-tuning
+        "num_train_epochs": 3,
+        "fp16": False,
+        "bf16": True,
+        "logging_dir": "./logs",
+        "report_to": "wandb" if args.use_wandb else "none",
+        "remove_unused_columns": False,
+        "gradient_checkpointing": True,
+        "optim": "adamw_torch",            # Using PyTorch's implementation to avoid deprecation warning
+        "deepspeed": "./acornrl/deepspeed_configs/ds_config_fp16.json",
+        # Memory optimizations
+        "per_device_eval_batch_size": 1,
+        "dataloader_pin_memory": False,
+        "dataloader_num_workers": 0,
+        "logging_steps": 10,               # More frequent logging
+    }
+
+    # Get the appropriate trainer and args
+    trainer, _ = get_trainer_and_args(
+        args.train_method, 
+        model, 
+        training_args_dict, 
+        dataset, 
+        tokenizer,
+        lm_sft_coeff=args.lm_sft_coeff,
+        lm_kl_coeff=args.lm_kl_coeff,
+        clip_range=args.clip_range
     )
 
     # Train
@@ -171,6 +263,10 @@ def main():
     model.save_pretrained(model_output_path, safe_serialization=True)
     tokenizer.save_pretrained(model_output_path)
    
+    # Finish wandb run if enabled
+    if args.use_wandb:
+        wandb.finish()
+
     # Clean up
     model = None
     torch.cuda.empty_cache()

@@ -31,7 +31,7 @@ if [ "$LOG_TYPE" = "wandb" ]; then
 fi
 
 # Number of iterations for training loop
-NUM_ITERATIONS=2  # Change as needed
+NUM_ITERATIONS=5  # Change as needed
 
 # List of environments (passed as args)
 ENV_IDS=("TicTacToe-v0")
@@ -39,9 +39,9 @@ EVAL_ENV_IDS=("ConnectFour-v0")
 EVAL_EPISODES=10
 
 # Maximum sequence length
-MAX_SEQ_LEN=8192
-EPISODES_PER_ITER=100 #100 #100
-current_checkpoint="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+MAX_SEQ_LEN=65536
+EPISODES_PER_ITER=5000 #100 #100
+current_checkpoint="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 
 # Number of GPUs to use (set dynamically)
 NUM_GPUS_REQUESTED=4  # Change this to set how many GPUs to use
@@ -82,7 +82,7 @@ for ((i=1; i<=NUM_ITERATIONS; i++)); do
     echo "[Training] Running training script..."
     
     # Run training script (modify with actual script path & arguments)
-    deepspeed --num_gpus $NUM_GPUS --master_port 29501 train_lora_model.py \
+    deepspeed --num_gpus $NUM_GPUS --master_port 29501 train_model.py \
         --max-seq-len $MAX_SEQ_LEN \
         --output-dir $RUN_FOLDER \
         --train-method spag \
