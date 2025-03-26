@@ -1,18 +1,20 @@
-import os, json, time,  argparse, torch
+import os, json, time, argparse, torch
 import numpy as np
+import pandas as pd 
 from datasets import Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
-from peft import get_peft_model, LoraConfig, prepare_model_for_kbit_training, TaskType, PeftConfig, PeftModel
 
 import torch.nn.functional as F
-
+from transformers import Trainer
 # local imports 
 from acornrl.trainers import ReinforceTrainer, SPAGTrainer, SPAGTrainingArguments
 from acornrl.reward_shaping import reshape_rewards
 
+import gc
 
 def tokenize_and_mask(batch, tokenizer, gamma, max_seq_len=1024):
-    prompt_texts = batch["observation"]
+    # prompt_texts = batch["observation"]
+    prompt_texts = batch["formatted_observation"]
     completion_texts = [
         f"{r}</think><answer>{a}</answer>"
         for r, a in zip(batch["reasoning"], batch["action"])
@@ -23,7 +25,8 @@ def tokenize_and_mask(batch, tokenizer, gamma, max_seq_len=1024):
         full_texts,
         padding="max_length",
         truncation=True,
-        max_length=max_seq_len
+        max_length=max_seq_len,
+        add_special_tokens=False
     )
 
     input_ids = tokenized_full["input_ids"]
@@ -45,15 +48,16 @@ def tokenize_and_mask(batch, tokenizer, gamma, max_seq_len=1024):
 
     # discounted reward: final_reward * (gamma^(full_length - step))
     # advantage = avg_reward + final_reward
-    tokenized_full["reward"] = np.array(batch["final_reward"]) * gamma ** (
-        np.array(batch["full_length"]) - np.array(batch["step"])
-    )
+    tokenized_full["reward"] = batch["final_reward"] 
+    # np.array(batch["final_reward"]) * gamma ** (
+    #     np.array(batch["full_length"]) - np.array(batch["step"])
+    # )
 
     return tokenized_full
 
 def spag_collator(batch, tokenizer, gamma, max_seq_len=1024):
     results = tokenize_and_mask(batch, tokenizer, gamma, max_seq_len)
-    sft_mask = [ 0. for item in results['input_ids']]
+    sft_mask = [0. for item in results['input_ids']]
     weights = [1. for item in results['input_ids']]
     results['sft_mask'] = torch.Tensor(sft_mask).float()
     results['weights'] = torch.Tensor(weights).float()
@@ -101,9 +105,9 @@ def get_keep_columns(train_method):
 
 def main():
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Train LoRa model on colelcted traces.")
+    parser = argparse.ArgumentParser(description="Full fine-tuning on collected traces.")
     
-    # parser.add_argument("--checkpoint", type=str, required=True, help="The model used for data collection")
+    parser.add_argument("--model-path", type=str, help="Model path", default="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
     parser.add_argument("--gamma", type=float, required=False, default=0.99, help="Gamma time discounting of rewards")
     parser.add_argument("--max-seq-len", type=int, required=True, help="Maximum sequence length")
 
@@ -111,7 +115,6 @@ def main():
     parser.add_argument("--iter", type=int, required=True, help="Iteration number")
     
     parser.add_argument("--local_rank", type=int, default=0, help="(For deepspeed) local rank.")
-    # parser.add_argument("--data-file", type=str, required=True, help=".json file of training data")
 
     parser.add_argument("--normalize-rewards", action="store_true", help="Whether the reward should be normalized")
     parser.add_argument("--reward-transformations", nargs="+", required=False, default=None, help="List of reward transformations")
@@ -123,70 +126,54 @@ def main():
     
     # Add wandb logging arguments
     parser.add_argument("--use-wandb", action="store_true", help="Enable Weights & Biases logging")
-    parser.add_argument("--wandb-project", type=str, default="lora-training", help="W&B project name")
+    parser.add_argument("--wandb-project", type=str, default="full-training", help="W&B project name")
     parser.add_argument("--wandb-name", type=str, default=None, help="W&B run name (defaults to timestamp if not provided)")
 
     args = parser.parse_args()
 
+    # Set memory efficiency options
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-    # define and build paths
-    lora_adapter_path = os.path.join(args.output_dir, "checkpoints", f"{args.iter}", "lora_adapter")
-    os.makedirs(lora_adapter_path, exist_ok=True)
+    # Define and build paths
+    model_output_path = os.path.join(args.output_dir, "checkpoints", f"{args.iter}", "model")
+    os.makedirs(model_output_path, exist_ok=True)
 
-    final_model_path = os.path.join(args.output_dir, "checkpoints", f"{args.iter}", "model")
-    os.makedirs(final_model_path, exist_ok=True)
+    # Determine whether to load from previous checkpoint
+    first_training = args.iter == 1
+    prev_model_path = os.path.join(args.output_dir, "checkpoints", f"{args.iter-1}", "model")
+    model_path = args.model_path if first_training else prev_model_path
 
-    training_data_path = os.path.join(args.output_dir, "data", f"iter_{args.iter}.json")
+    # load the data
+    training_data_path = os.path.join(args.output_dir, "data", f"train_{args.iter}.csv")
+    df = pd.read_csv(training_data_path)
+    print(len(df))
 
+    episodes_with_reward1 = df.loc[df["final_reward"] == 1, "episode_id"].unique()
+    df_filtered = df[df["episode_id"].isin(episodes_with_reward1)]
 
-    # check whether lora adapter already exists
-    # first_training = not (os.path.exists(lora_adapter_path) and len(os.listdir(lora_adapter_path))>0) 
-    first_training = args.iter==1
+    # 2) Also keep only the rows where reasoning is not empty and final_reward != 0
+    df = df_filtered[(df_filtered["reasoning"] != "") & (df_filtered["final_reward"] != 0)]
 
-    # 2) Check if there is data 
-    if not os.path.exists(training_data_path):
-        print("[Training] No data file found. Please run data_collection.py first.")
-        return
-
-    with open(training_data_path, "r") as f:
-        data_json = json.load(f)
-
-
-    data_list = data_json.get("data", [])
-    if len(data_list) == 0:
+    # 3) Check if anything is left
+    if len(df) == 0:
         print("[Training] 0 data points found. Nothing to train on.")
         return
+    print(f"[Training] Found {len(df)} data points.")
 
+    # Apply reward transformations if specified
+    if args.reward_transformations or args.normalize_rewards:
+        data_list = df.to_dict('records')
+        data_list = reshape_rewards(
+            data_list=data_list, 
+            transformations=args.reward_transformations,
+            normalize=args.normalize_rewards
+        )
+        df = pd.DataFrame(data_list)
 
-    print(f"[Training] Found {len(data_list)} data points.")
+    dataset = Dataset.from_pandas(df)
 
-    # # # get average reward
-    # # avg_reward = np.mean([a["final_reward"] for a in data_list])
-    # def normalize_rewards(reward, avg_reward, std_reward):
-    #     # return (advantages - np.mean(advantages)) / (np.std(advantages) + 1e-8)
-    #     return (reward - avg_reward) / (std_reward + 1e-8)
-
-    # all_reward = [a["final_reward"] for a in data_list]
-    # # update the final reward to be normalized
-    # for idx in range(len(data_list)):
-    #     data_list[idx]["final_reward"] = normalize_rewards(
-    #         reward=data_list[idx]["final_reward"],
-    #         avg_reward=np.mean(all_reward),
-    #         std_reward=np.std(all_reward)
-    #     )
-
-    data_list = reshape_rewards(
-        data_list=data_list, 
-        transformations=args.reward_transformations,
-        normalize=args.normalize_rewards
-    )
-
-
-    # 3) Convert to Dataset
-    dataset = Dataset.from_list(data_list)
-
-    # 4) Tokenizer 
-    tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+    # Set up the tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -199,38 +186,21 @@ def main():
     remove_cols = set(dataset.column_names) - set(keep_cols)
     dataset = dataset.remove_columns(remove_cols)
 
-    # 5) Load the base model (without device_map='auto' for distributed training)
-    base_model = AutoModelForCausalLM.from_pretrained(
-        "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
-        torch_dtype=torch.float16,  # Force FP16 to save memory
-    )
+    print(dataset)
+    print(len(dataset))
+
+    # Load the model
+    print(f"[Training] Loading model from {model_path}")
+    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.bfloat16)
 
     # Enable gradient checkpointing for memory efficiency
-    base_model.gradient_checkpointing_enable()
-
-    # 6) Create and apply LoRA configuration
-    print(f"[Training] Configuring LoRA adapter")
-    lora_config = LoraConfig(
-        r=16,                     # Rank dimension
-        lora_alpha=32,            # Alpha parameter for LoRA scaling
-        target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        lora_dropout=0.05,
-        bias="none",
-        task_type=TaskType.CAUSAL_LM
-    )
-
-    # Prepare model fro training
-    model = get_peft_model(base_model, lora_config)
-    if not first_training:
-        prev_lora_adapter_path = os.path.join(args.output_dir, "checkpoints", f"{args.iter-1}", "lora_adapter")
-        model.load_adapter(prev_lora_adapter_path, adapter_name="default", local_files_only=True)
-        model.set_adapter("default")
+    model.gradient_checkpointing_enable()
 
     # 6.1) Add reference model if SPAG
     if args.train_method == "spag":
         ref_model = AutoModelForCausalLM.from_pretrained(
-            "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
-            trust_remote_code=True,
+            model_path,
+            torch_dtype=torch.bfloat16,
         )
         if hasattr(ref_model, "ref_model"):
             del ref_model.ref_model
@@ -239,49 +209,47 @@ def main():
 
         model.ref_model = ref_model
 
-    # 7) Training arguments optimized for LoRA
-    training_args = {
-        "output_dir": lora_adapter_path,
+    # Configure wandb if enabled
+    if args.use_wandb:
+        import wandb
+        
+        # Set up wandb run name if not provided
+        run_name = args.wandb_name if args.wandb_name else f"full-training-iter-{args.iter}-{time.strftime('%Y%m%d-%H%M%S')}"
+        
+        # Initialize wandb
+        wandb.init(
+            project=args.wandb_project,
+            name=run_name
+        )
+
+    # Training arguments
+    training_args_dict = {
+        "output_dir": model_output_path,
         "save_strategy": "no",
-        "save_steps": 100,
         "per_device_train_batch_size": 1,
-        "gradient_accumulation_steps": 16,
-        "learning_rate": 2e-4,        # Higher learning rate for LoRA fine-tuning
-        "num_train_epochs": 5,
+        "gradient_accumulation_steps": 16,  # Increased for full fine-tuning
+        "learning_rate": 1e-5,             # Lower learning rate for full fine-tuning
+        "num_train_epochs": 3,
         "fp16": False,
         "bf16": True,
         "logging_dir": "./logs",
         "report_to": "wandb" if args.use_wandb else "none",
         "remove_unused_columns": False,
         "gradient_checkpointing": True,
-        "optim": "adamw_hf", #"adamw_torch",
-        "deepspeed":"./acornrl/deepspeed_configs/ds_config_fp16.json",
+        "optim": "adamw_torch",            # Using PyTorch's implementation to avoid deprecation warning
+        "deepspeed": "./acornrl/deepspeed_configs/ds_config_fp16.json",
         # Memory optimizations
         "per_device_eval_batch_size": 1,
         "dataloader_pin_memory": False,
         "dataloader_num_workers": 0,
-        "logging_steps": 1
+        "logging_steps": 10,               # More frequent logging
     }
 
-    # Configure wandb if enabled
-    if args.use_wandb:
-        import wandb
-        
-        # Set up wandb run name if not provided
-        run_name = args.wandb_name if args.wandb_name else f"lora-training-iter-{args.iter}-{time.strftime('%Y%m%d-%H%M%S')}"
-        
-        # Initialize wandb with training_args
-        wandb.init(
-            project=args.wandb_project,
-            name=run_name,
-            config=training_args
-        )
-
     # Get the appropriate trainer and args
-    trainer, training_args = get_trainer_and_args(
+    trainer, _ = get_trainer_and_args(
         args.train_method, 
         model, 
-        training_args, 
+        training_args_dict, 
         dataset, 
         tokenizer,
         lm_sft_coeff=args.lm_sft_coeff,
@@ -289,41 +257,22 @@ def main():
         clip_range=args.clip_range
     )
 
-    # 8) Train
+    # Train
     trainer.train()
-
-    # 9) Save the LoRA adapter model
-    model.save_pretrained(lora_adapter_path)
-    print(f"[Training] LoRA adapter saved to {lora_adapter_path}")
-    
+    model = trainer.model 
+    model.save_pretrained(model_output_path, safe_serialization=True)
+    tokenizer.save_pretrained(model_output_path)
+   
     # Finish wandb run if enabled
     if args.use_wandb:
         wandb.finish()
-        
-    time.sleep(5)
 
-    # merge lora into main model 
+    # Clean up
+    model = None
+    torch.cuda.empty_cache()
+    gc.collect()
 
-    # 1) Read the LoRA config
-    peft_config = PeftConfig.from_pretrained(lora_adapter_path)
-
-    # 2) Load the base model 
-    model = AutoModelForCausalLM.from_pretrained(peft_config.base_model_name_or_path, torch_dtype=torch.float16, device_map="auto")
-
-    # 3) Load the LoRA adapter
-    model = PeftModel.from_pretrained(model, lora_adapter_path, device_map="auto")
-
-    # 4) Merge the LoRA weights into the main model
-    model = model.merge_and_unload()
-
-    # 5. Save the merged model
-    model.save_pretrained(final_model_path)
-
-    # 6. Also save the tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(peft_config.base_model_name_or_path)
-    tokenizer.save_pretrained(final_model_path)
-
-    print(f"[Trained Model] Merged model saved at: {final_model_path}")
+    print(f"[Trained Model] Model saved at: {model_output_path}")
 
 if __name__ == "__main__":
     main()

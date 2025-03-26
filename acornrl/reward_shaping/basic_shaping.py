@@ -1,15 +1,20 @@
 import numpy as np
 
 
+
+
+
+
+
 def reshape_rewards(data_list, transformations=None, normalize=False):
     # add a reward step count
-    for idx in range(len(data_list)):
-        # reward more turns
-        data_list[idx]["final_reward"] = data_list[idx]["final_reward"] + data_list[idx]["full_length"]*0.05
+    # for idx in range(len(data_list)):
+    #     # reward more turns
+    #     data_list[idx]["final_reward"] = data_list[idx]["final_reward"] + data_list[idx]["full_length"]*0.05
 
-        # punish for not returning reasoning
-        if data_list[idx]["reasoning"] == "":
-            data_list[idx]["final_reward"] = data_list[idx]["final_reward"] - 1
+    #     # punish for not returning reasoning
+    #     if data_list[idx]["reasoning"] == "":
+    #         data_list[idx]["final_reward"] = data_list[idx]["final_reward"] - 1
 
 
     if normalize:

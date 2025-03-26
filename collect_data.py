@@ -13,7 +13,7 @@ def main():
     parser.add_argument("--iter", type=int, required=True, help="Iteration number")
     parser.add_argument("--temperature", type=float, required=False, default=0.7, help="Generation temperature")
     parser.add_argument("--top-p", type=float, required=False, default=0.9, help="Generation top-p")
-
+    parser.add_argument("--max-workers", type=int, required=False, default=512, help="The number of envs running in parallel")
     # run eval with already loaded vllm model
     # parser.add_argument("--run-eval", type=bool, required=False, default=False, help="Whether to run evals after collecting data.")
     parser.add_argument("--run-eval", action="store_true", help="Run evaluations after collecting data.")
@@ -32,35 +32,23 @@ def main():
 
 
     # Output file for this iteration
-    data_file = os.path.join(data_folder, f"iter_{args.iter}.json")
+    # data_file = os.path.join(data_folder, f"iter_{args.iter}.json")
     print(f"[Data Collection] Running iteration {args.iter} on environments: {args.env_ids}")
 
     # Run the data collection and optionally evaluation 
     with VLLMCollector(
-        checkpoint_paths=[args.checkpoint],
-        env_ids=args.env_ids, 
-        logging_dir=logging_folder, 
-        iteration=args.iter, 
-        max_new_tokens=args.max_seq_len
+        env_ids=args.env_ids, checkpoint_path=args.checkpoint, output_dir=args.output_dir, 
+        max_new_tokens=args.max_seq_len, max_workers=args.max_workers
     ) as collector:
         # collect training data
         print(f"[Data Collection] loading model {args.checkpoint}")
-        data_dict = collector.collect(num_episodes=args.episodes)
-        new_data = data_dict["data"]
-        print(f"[Data Collection] Collected {len(new_data)} new transitions.")
+        data_dict = collector.collect(num_episodes=args.episodes, iteration=args.iter)
 
+        # # check if eval
+        # if args.run_eval:
+        #     print(f"[Evaluation] running {args.eval_episodes} of evaluation on {args.eval_env_ids}")
+        #     collector.run_evaluation(env_ids=args.eval_env_ids, num_episodes=args.eval_episodes)
 
-        # check if eval
-        if args.run_eval:
-            print(f"[Evaluation] running {args.eval_episodes} of evaluation on {args.eval_env_ids}")
-            collector.run_evaluation(env_ids=args.eval_env_ids, num_episodes=args.eval_episodes)
-
-
-    # Save collected data as a new JSON file
-    with open(data_file, "w") as f:
-        json.dump({"data": new_data}, f, indent=2)
-
-    print(f"[Data Collection] Saved data to {data_file}")
 
 if __name__ == "__main__":
     main()

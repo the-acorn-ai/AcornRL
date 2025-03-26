@@ -1,7 +1,9 @@
 #!/bin/bash
+set -e
 
 # Base directory for storing runs
 BASE_DIR="training_runs"
+LOG_TYPE="wandb"  # either "wandb" or "offline"
 
 # Get current date and time
 CURRENT_DATE=$(date +"%Y-%m-%d")
@@ -17,18 +19,28 @@ LOG_FOLDER="$RUN_FOLDER/logging"
 # Create necessary directories
 mkdir -p "$DATA_FOLDER" "$CHECKPOINT_FOLDER" "$LOG_FOLDER"
 
+# Check if wandb is selected and logged in
+if [ "$LOG_TYPE" = "wandb" ]; then
+    echo "Checking wandb login status..."
+    if ! wandb status &>/dev/null; then
+        echo "Error: wandb is not logged in. Please run 'wandb login' first."
+        exit 1
+    else
+        echo "wandb is logged in and will be used for logging."
+    fi
+fi
 
 # Number of iterations for training loop
-NUM_ITERATIONS=1  # Change as needed
+NUM_ITERATIONS=2  # Change as needed
 
 # List of environments (passed as args)
 ENV_IDS=("TicTacToe-v0")
 EVAL_ENV_IDS=("ConnectFour-v0")
-EVAL_EPISODES=128 #0 #20
+EVAL_EPISODES=10
 
 # Maximum sequence length
-MAX_SEQ_LEN=4096
-EPISODES_PER_ITER=16384 #512 #100 #100
+MAX_SEQ_LEN=8192
+EPISODES_PER_ITER=100 #100 #100
 current_checkpoint="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
 # Number of GPUs to use (set dynamically)
@@ -47,7 +59,6 @@ else
 fi
 GPU_IDS=$(seq -s, 0 $((NUM_GPUS - 1)))  # Generates "0,1" for 2 GPUs, etc.
 
-
 echo "Starting RL training loop for $NUM_ITERATIONS iterations..."
 echo "with environments: $ENV_IDS"
 echo "Using GPUs: $GPU_IDS"
@@ -63,19 +74,23 @@ for ((i=1; i<=NUM_ITERATIONS; i++)); do
         --env-ids "${ENV_IDS[@]}" \
         --output-dir "$RUN_FOLDER" \
         --iter $i \
-        #--run-eval \
-        #--eval-env-ids "${EVAL_ENV_IDS[@]}" \
-        #--eval-episodes $EVAL_EPISODES
+
+        # --run-eval \
+        # --eval-env-ids "${EVAL_ENV_IDS[@]}" \
+        # --eval-episodes $EVAL_EPISODES
 
     echo "[Training] Running training script..."
     
     # Run training script (modify with actual script path & arguments)
-    # deepspeed --num_gpus $NUM_GPUS train_model.py \
-    #     --max-seq-len $MAX_SEQ_LEN \
-    #     --output-dir "$RUN_FOLDER" \
-    #     --iter $i
+    deepspeed --num_gpus $NUM_GPUS --master_port 29501 train_lora_model.py \
+        --max-seq-len $MAX_SEQ_LEN \
+        --output-dir $RUN_FOLDER \
+        --train-method reinforce \
+        --iter $i \
+        --use-wandb \
+        --wandb-project "acornrl-reinforce-training"
 
-    # current_checkpoint="$CHECKPOINT_FOLDER/$i/model"
+    current_checkpoint="$CHECKPOINT_FOLDER/$i/model"
 
     echo "=== Completed Iteration $i ==="
 done
