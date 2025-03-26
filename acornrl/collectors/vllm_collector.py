@@ -124,6 +124,8 @@ class VLLMCollector:
 
 
     def evaluate(self, num_episodes: int, iteration: int) -> None:
+        opponent_name = "google/gemini-2.0-flash-lite-001"
+        opponent_name = "openai/gpt-4o"
         # Start CSVManagerData as a context manager
         with CSVManagerData(self.output_dir, iteration, episode_type="eval") as csv_manager_data:
 
@@ -134,7 +136,7 @@ class VLLMCollector:
 
                 # assign player roles
                 agent_idx = int(np.random.uniform() < 0.5)
-                agents = {agent_idx: vllm_client, 1-agent_idx: ta.agents.OpenRouterAgent(opponent_name)}
+                agents = {agent_idx: vllm_client, 1-agent_idx: ta.agents.OpenRouterAgent(model_name=opponent_name)}
 
                 # Create & wrap environment 
                 env = ta.make(self.env_ids)
@@ -157,7 +159,7 @@ class VLLMCollector:
                             prompt=observation, max_new_tokens=self.max_new_tokens,
                             temperature=self.temperature, top_p=self.top_p
                         )
-                        model_name = self.checkpoint
+                        model_name = self.checkpoint_path
                     else:
                         model_name = opponent_name
                         formatted_observation, reasoning, action = None, None, model(observation)
@@ -191,3 +193,138 @@ class VLLMCollector:
                     future.result()  # wait for the result, but nothing to do with it here
                     progress_bar.update(1)
                 progress_bar.close()
+
+    def run_evaluation(self, env_ids: Optional[List[str]] = None, num_episodes: int = 10):
+        opponent_name = "google/gemini-2.0-flash-lite-001"
+
+        eval_tracker_subdict = {
+            "num_episodes": 0, "model_rewards": [], 
+            "model_outcomes": [], "opponent_rewards": [], "episode_lengths": []
+            }
+        eval_tracker = {"train": eval_tracker_subdict.copy()}
+        if env_ids is not None and len(env_ids) > 0:
+            eval_tracker["eval"] = eval_tracker_subdict.copy()
+
+        def run_episode(env_id: str, episode_id: int):
+            
+            client_idx = episode_id % len(self.vllm_clients)
+            vllm_client = self.vllm_clients[client_idx]
+
+            # assign player roles
+            agent_idx = int(np.random.uniform() < 0.5)
+            agents = {
+                agent_idx: vllm_client,
+                1-agent_idx: ta.agents.OpenRouterAgent(model_name=opponent_name)
+            }
+
+            # Create & wrap environment
+            env = ta.make(env_id)
+            env.state.error_allowance = 0
+            env = ta.wrappers.LLMObservationWrapper(env=env)
+
+            env.reset(num_players=2)
+            step_count = 0
+            done = False 
+
+            while not done:
+                player_id, observation = env.get_observation()
+
+                # route to correct model
+                model = agents[player_id]
+                if isinstance(model, VLLMInferenceClient):
+                    result = model.generate_text(
+                        prompt=observation,
+                        max_new_tokens=self.max_new_tokens,
+                        temperature=self.temperature,
+                        top_p=self.top_p
+                    )
+                    action = result["answer"]
+                else:
+                    action = model(observation)
+
+                # step
+                done, info = env.step(action=action)
+                step_count += 1
+
+            # Episode is done
+            rewards = env.close()
+
+            eval_episode_info = {
+                "episode_id": episode_id,
+                "env_id": env_id,
+                "opponent": opponent_name,
+                "model_player_id": agent_idx,
+                "model_reward": rewards[agent_idx],
+                "opponent_reward": rewards[1-agent_idx],
+                "episode_length": step_count+1,
+                "info": info,
+                "set": "train" if env_id in self.env_ids else "eval"
+            }
+
+            # Incrementally write eval info to CSV file
+            self._write_eval_episode_to_detailed_eval_csv(self.iteration, eval_episode_info)
+
+            return eval_episode_info
+
+        wins, count = 0, 0
+        rewards = []
+
+        # Parallel collection
+        all_env_ids = self.env_ids if env_ids is None else self.env_ids+env_ids
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = []
+            # iterate over eval env ids and train env_ids
+            for env_id in all_env_ids:
+                for i in range(num_episodes):
+                    futures.append(executor.submit(run_episode, env_id, i))
+
+            progress_bar = tqdm(
+                total=len(futures),
+                desc="Evaluating Model",
+                postfix={"win_rate": "0%", "avg_reward": "0"}
+            )
+
+            for future in concurrent.futures.as_completed(futures):
+                # Lock the eval tracker dict
+                eval_info = future.result()
+
+                with self.token_metrics_lock:
+                    wins += int(eval_info["model_reward"] > eval_info["opponent_reward"])
+                    count += 1
+                    rewards.append(eval_info["model_reward"])
+
+                    # update progress bar
+                    progress_bar.set_postfix(win_rate=f"{wins/count:.2f}%", avg_reward=f"{np.mean(rewards):.2f}")
+                    progress_bar.update(1)
+
+                    # update eval tracker dict
+                    eval_tracker[eval_info["set"]]["num_episodes"] += 1
+                    eval_tracker[eval_info["set"]]["model_rewards"].append(eval_info["model_reward"])
+                    eval_tracker[eval_info["set"]]["model_outcomes"].append(int(eval_info["model_reward"] > eval_info["opponent_reward"]))
+                    eval_tracker[eval_info["set"]]["opponent_rewards"].append(eval_info["opponent_reward"])
+                    eval_tracker[eval_info["set"]]["episode_lengths"].append(eval_info["episode_length"])
+
+            progress_bar.close()
+
+        # log accumulated eval results
+        accumulated_eval_dict = {}
+        for set_name in eval_tracker.keys():
+            if set_name not in accumulated_eval_dict:
+                accumulated_eval_dict[set_name] = {}
+            set_env_ids = self.env_ids if set_name == "train" else env_ids
+            accumulated_eval_dict[set_name]["env_ids"] = ",".join(set_env_ids)
+            accumulated_eval_dict[set_name]["num_episodes"] = eval_tracker[set_name]["num_episodes"]
+            accumulated_eval_dict[set_name]["avg_model_reward"] = np.mean(eval_tracker[set_name]["model_rewards"])
+            
+            wins = np.sum(eval_tracker[set_name]["model_outcomes"]) 
+            games = len(eval_tracker[set_name]["model_outcomes"])
+            accumulated_eval_dict[set_name]["avg_model_win_rate"] = wins/games if games!=0 else 0
+            accumulated_eval_dict[set_name]["opponent"] = opponent_name
+            accumulated_eval_dict[set_name]["avg_opponent_reward"] = np.mean(eval_tracker[set_name]["opponent_rewards"])
+            accumulated_eval_dict[set_name]["avg_episode_length"] = np.mean(eval_tracker[set_name]["episode_lengths"])
+        
+        # Write the summary of this evaluation run
+        self._write_eval_summary_to_eval_csv(iteration=self.iteration, eval_summary_dict=accumulated_eval_dict)
+
+        # Return the summary metrics
+        return accumulated_eval_dict

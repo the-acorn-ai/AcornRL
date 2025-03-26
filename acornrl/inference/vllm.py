@@ -187,7 +187,9 @@ class VLLMServerManager:
         """Verify a single server is running."""
         url = f"http://localhost:{port}/health"
         
-        for attempt in range(max_attempts):
+        attempt = 0
+        wait_time = timeout
+        while attempt < max_attempts:
             try:
                 response = requests.get(url, timeout=timeout)
                 if response.status_code == 200:
@@ -197,7 +199,9 @@ class VLLMServerManager:
                 pass
             
             self.logger.info(f"Waiting for vLLM server on port {port}... ({attempt+1}/{max_attempts})")
-            time.sleep(timeout)
+            time.sleep(wait_time)
+            attempt += 1
+            wait_time = min(wait_time * 2, 60)  # Double wait time with each attempt, cap at 60 seconds
         
         self.logger.error(f"vLLM server on port {port} failed to start")
         return False

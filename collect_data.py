@@ -14,6 +14,7 @@ def main():
     parser.add_argument("--temperature", type=float, required=False, default=0.7, help="Generation temperature")
     parser.add_argument("--top-p", type=float, required=False, default=0.9, help="Generation top-p")
     parser.add_argument("--max-workers", type=int, required=False, default=512, help="The number of envs running in parallel")
+    parser.add_argument("--tensor-parallel-size", type=int, required=False, default=1, help="The number of GPUs to use")
     # run eval with already loaded vllm model
     # parser.add_argument("--run-eval", type=bool, required=False, default=False, help="Whether to run evals after collecting data.")
     parser.add_argument("--run-eval", action="store_true", help="Run evaluations after collecting data.")
@@ -38,17 +39,17 @@ def main():
     # Run the data collection and optionally evaluation 
     with VLLMCollector(
         env_ids=args.env_ids, checkpoint_path=args.checkpoint, output_dir=args.output_dir, 
-        max_new_tokens=args.max_seq_len, max_workers=args.max_workers
+        max_new_tokens=args.max_seq_len, max_workers=args.max_workers, tensor_parallel_size=args.tensor_parallel_size
     ) as collector:
         # collect training data
         print(f"[Data Collection] loading model {args.checkpoint}")
         data_dict = collector.collect(num_episodes=args.episodes, iteration=args.iter)
 
         # # check if eval
-        # if args.run_eval:
-        #     print(f"[Evaluation] running {args.eval_episodes} of evaluation on {args.eval_env_ids}")
-        #     collector.run_evaluation(env_ids=args.eval_env_ids, num_episodes=args.eval_episodes)
-
+        if args.run_eval:
+            print(f"[Evaluation] running {args.eval_episodes} of evaluation on {args.eval_env_ids}")
+            # collector.run_evaluation(env_ids=args.eval_env_ids, num_episodes=args.eval_episodes)
+            collector.evaluate(num_episodes=args.eval_episodes, iteration=args.iter)
 
 if __name__ == "__main__":
     main()
