@@ -31,15 +31,15 @@ if [ "$LOG_TYPE" = "wandb" ]; then
 fi
 
 # Number of iterations for training loop
-NUM_ITERATIONS=5  # Change as needed
+NUM_ITERATIONS=4  # Change as needed
 
 # List of environments (passed as args)
 ENV_IDS=("TicTacToe-v0")
 EVAL_ENV_IDS=("ConnectFour-v0")
-EVAL_EPISODES=10
+EVAL_EPISODES=128
 
 # Maximum sequence length
-MAX_SEQ_LEN=65536
+MAX_SEQ_LEN=16384
 EPISODES_PER_ITER=5000 #100 #100
 current_checkpoint="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 
@@ -58,6 +58,7 @@ else
     NUM_GPUS=$NUM_GPUS_REQUESTED
 fi
 GPU_IDS=$(seq -s, 0 $((NUM_GPUS - 1)))  # Generates "0,1" for 2 GPUs, etc.
+GPU_IDS="4,5,6,7"
 
 echo "Starting RL training loop for $NUM_ITERATIONS iterations..."
 echo "with environments: $ENV_IDS"
@@ -67,28 +68,29 @@ for ((i=1; i<=NUM_ITERATIONS; i++)); do
     echo "=== Iteration $i ==="
 
     # Run data collection
-    CUDA_VISIBLE_DEVICES=$GPU_IDS python3 collect_data.py \
-        --checkpoint $current_checkpoint\
+    python3 collect_data.py \
+        --checkpoint $current_checkpoint \
         --episodes $EPISODES_PER_ITER \
         --max-seq-len $MAX_SEQ_LEN \
         --env-ids "${ENV_IDS[@]}" \
         --output-dir "$RUN_FOLDER" \
         --iter $i \
-
-        # --run-eval \
-        # --eval-env-ids "${EVAL_ENV_IDS[@]}" \
-        # --eval-episodes $EVAL_EPISODES
+        --run-eval \
+        --gpus $GPU_IDS \
+        --eval-env-ids "${EVAL_ENV_IDS[@]}" \
+        --eval-episodes $EVAL_EPISODES
 
     echo "[Training] Running training script..."
     
     # Run training script (modify with actual script path & arguments)
-    deepspeed --num_gpus $NUM_GPUS --master_port 29501 train_model.py \
+    deepspeed --include="localhost:4,5,6,7" train_model.py \
         --max-seq-len $MAX_SEQ_LEN \
         --output-dir $RUN_FOLDER \
         --train-method spag \
         --iter $i \
         --use-wandb \
-        --wandb-project "acornrl-spag-training"
+        --wandb-project "acornrl-spag-training" \
+        --gamma 0.99
 
     current_checkpoint="$CHECKPOINT_FOLDER/$i/model"
 

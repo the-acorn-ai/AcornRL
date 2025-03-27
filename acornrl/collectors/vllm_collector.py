@@ -4,7 +4,7 @@ import concurrent.futures
 import numpy as np 
 from tqdm import tqdm 
 from typing import Optional, List, Dict, Any
-
+import re
 
 import textarena as ta
 from acornrl.inference import VLLMServerManager, VLLMInferenceClient
@@ -95,7 +95,8 @@ class VLLMCollector:
                             "reasoning": reasoning, "action": action, "step": step_count
                         })
 
-                        done, info = env.step(action=action)
+                        # done, info = env.step(action=action)
+                        done, info = env.step(action=re.sub(r"\\boxed\{(\d+)\}", r"[\1]", action))
                         step_count += 1
 
                     # Episode done
@@ -125,6 +126,7 @@ class VLLMCollector:
 
     def evaluate(self, num_episodes: int, iteration: int) -> None:
         # Start CSVManagerData as a context manager
+        opponent_name = "google/gemini-2.0-flash-lite-001"
         with CSVManagerData(self.output_dir, iteration, episode_type="eval") as csv_manager_data:
 
             def run_episode(episode_id: int) -> None:
@@ -157,7 +159,7 @@ class VLLMCollector:
                             prompt=observation, max_new_tokens=self.max_new_tokens,
                             temperature=self.temperature, top_p=self.top_p
                         )
-                        model_name = self.checkpoint
+                        model_name = self.checkpoint_path
                     else:
                         model_name = opponent_name
                         formatted_observation, reasoning, action = None, None, model(observation)

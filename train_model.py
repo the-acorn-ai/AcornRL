@@ -28,6 +28,8 @@ def tokenize_and_mask(batch, tokenizer, gamma, max_seq_len=1024):
         max_length=max_seq_len,
         add_special_tokens=False
     )
+    # Print the length of tokenized full
+    # print(f"Tokenized length: {len(tokenized_full['input_ids'][0])}")
 
     input_ids = tokenized_full["input_ids"]
     attention_masks = tokenized_full["attention_mask"]
@@ -48,19 +50,25 @@ def tokenize_and_mask(batch, tokenizer, gamma, max_seq_len=1024):
 
     # discounted reward: final_reward * (gamma^(full_length - step))
     # advantage = avg_reward + final_reward
-    tokenized_full["reward"] = batch["final_reward"] 
-    # np.array(batch["final_reward"]) * gamma ** (
+    # tokenized_full["reward"] = batch["final_reward"] 
+    # tokenized_full["reward"] = np.array(batch["final_reward"]) * gamma ** (
     #     np.array(batch["full_length"]) - np.array(batch["step"])
     # )
+    # Following the formula from the SPAG paper at Appendix B 
+    tokenized_full["reward"] = np.array(batch["final_reward"]) * (
+        ((1 - gamma) * gamma ** (
+            np.array(batch["full_length"]) - np.array(batch["step"])
+        )) / (1 - gamma ** (np.array(batch["full_length"]) + 1))
+    )
 
     return tokenized_full
 
 def spag_collator(batch, tokenizer, gamma, max_seq_len=1024):
     results = tokenize_and_mask(batch, tokenizer, gamma, max_seq_len)
-    sft_mask = [0. for item in results['input_ids']]
-    weights = [1. for item in results['input_ids']]
-    results['sft_mask'] = torch.Tensor(sft_mask).float()
-    results['weights'] = torch.Tensor(weights).float()
+    
+    # Don't convert to torch tensors here - keep as lists
+    results['sft_mask'] = [torch.tensor(0.).float() for _ in results['input_ids']]
+    results['weights'] = [torch.tensor(1.).float() for _ in results['input_ids']]
     return results
 
 def filter_by_length(batch, tokenizer, max_seq_len=1024):
@@ -86,21 +94,19 @@ def get_trainer_and_args(train_method, model, base_args, dataset, tokenizer, **k
             tokenizer=tokenizer
         ), train_args
     elif train_method == "sft":
-        sft_args = SPAGTrainingArguments(
-            lm_sft_coeff=kwargs.get('lm_sft_coeff', 0.1),
+        spag_args = SPAGTrainingArguments(
             lm_kl_coeff=kwargs.get('lm_kl_coeff', 0.01),
             clip_range=kwargs.get('clip_range', 0.2),
             **base_args
         )
         return SFTTrainer(
             model=model,
-            args=sft_args,
+            args=spag_args,
             train_dataset=dataset,
             tokenizer=tokenizer
-        ), sft_args
+        ), spag_args
     elif train_method == "spag":
         spag_args = SPAGTrainingArguments(
-            lm_sft_coeff=kwargs.get('lm_sft_coeff', 0.1),
             lm_kl_coeff=kwargs.get('lm_kl_coeff', 0.01),
             clip_range=kwargs.get('clip_range', 0.2),
             **base_args
@@ -123,8 +129,10 @@ def get_data_processor(train_method, tokenizer, gamma, max_seq_len):
 
 def get_keep_columns(train_method):
     """Returns the columns to keep based on training method."""
-    if train_method in ["spag", "sft"]:
+    if train_method == "spag":
         return ["input_ids", "attention_mask", "labels", "reward", "sft_mask", "weights"]
+    elif train_method == "sft":
+        return ["input_ids", "attention_mask", "labels", "reward", "weights"]
     else:
         return ["input_ids", "attention_mask", "labels", "reward"]
 
@@ -132,7 +140,7 @@ def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Full fine-tuning on collected traces.")
     
-    parser.add_argument("--model-path", type=str, help="Model path", default="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+    parser.add_argument("--model-path", type=str, help="Model path", default="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B")
     parser.add_argument("--gamma", type=float, required=False, default=0.99, help="Gamma time discounting of rewards")
     parser.add_argument("--max-seq-len", type=int, required=True, help="Maximum sequence length")
 
@@ -209,12 +217,12 @@ def main():
     
     # Get the appropriate data processor based on method
     data_processor = get_data_processor(args.train_method, tokenizer, args.gamma, args.max_seq_len)
-    dataset = dataset.map(data_processor, batched=True)
+    processed_dataset = dataset.map(data_processor, batched=True)
     
     # Get columns to keep based on method
     keep_cols = get_keep_columns(args.train_method)
-    remove_cols = set(dataset.column_names) - set(keep_cols)
-    dataset = dataset.remove_columns(remove_cols)
+    remove_cols = set(processed_dataset.column_names) - set(keep_cols)
+    dataset = processed_dataset.remove_columns(remove_cols)
 
     print(dataset)
     print(len(dataset))
@@ -227,7 +235,7 @@ def main():
     model.gradient_checkpointing_enable()
 
     # 6.1) Add reference model if SPAG
-    if args.train_method == "spag":
+    if args.train_method in ["spag", "sft"]:
         ref_model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
@@ -240,7 +248,7 @@ def main():
         model.ref_model = ref_model
 
     # Configure wandb if enabled
-    if args.use_wandb:
+    if args.use_wandb and args.local_rank == 0:  # Only initialize on main process
         import wandb
         
         # Set up wandb run name if not provided
@@ -256,10 +264,10 @@ def main():
     training_args_dict = {
         "output_dir": model_output_path,
         "save_strategy": "no",
-        "per_device_train_batch_size": 1,
+        "per_device_train_batch_size": 2,
         "gradient_accumulation_steps": 16,  # Increased for full fine-tuning
-        "learning_rate": 1e-5,             # Lower learning rate for full fine-tuning
-        "num_train_epochs": 3,
+        "learning_rate": 5e-6,             # Lower learning rate for full fine-tuning
+        "num_train_epochs": 1,
         "fp16": False,
         "bf16": True,
         "logging_dir": "./logs",
@@ -272,7 +280,7 @@ def main():
         "per_device_eval_batch_size": 1,
         "dataloader_pin_memory": False,
         "dataloader_num_workers": 0,
-        "logging_steps": 10,               # More frequent logging
+        "logging_steps": 1,               # More frequent logging
     }
 
     # Get the appropriate trainer and args
@@ -289,18 +297,18 @@ def main():
 
     # Train
     trainer.train()
-    model = trainer.model
+    model = trainer.model 
     # Clean up reference model if it exists
     if hasattr(model, "ref_model") and model.ref_model is not None:
         model.ref_model = None
         torch.cuda.empty_cache()
         gc.collect()
-
+        
     model.save_pretrained(model_output_path, safe_serialization=True)
     tokenizer.save_pretrained(model_output_path)
    
     # Finish wandb run if enabled
-    if args.use_wandb:
+    if args.use_wandb and args.local_rank == 0:
         wandb.finish()
 
     # Clean up

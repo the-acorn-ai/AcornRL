@@ -1,7 +1,9 @@
 #!/bin/bash
+set -e
 
 # Base directory for storing runs
 BASE_DIR="training_runs"
+LOG_TYPE="wandb"  # either "wandb" or "offline"
 
 # Get current date and time
 CURRENT_DATE=$(date +"%Y-%m-%d")
@@ -17,19 +19,30 @@ LOG_FOLDER="$RUN_FOLDER/logging"
 # Create necessary directories
 mkdir -p "$DATA_FOLDER" "$CHECKPOINT_FOLDER" "$LOG_FOLDER"
 
+# Check if wandb is selected and logged in
+if [ "$LOG_TYPE" = "wandb" ]; then
+    echo "Checking wandb login status..."
+    if ! wandb status &>/dev/null; then
+        echo "Error: wandb is not logged in. Please run 'wandb login' first."
+        exit 1
+    else
+        echo "wandb is logged in and will be used for logging."
+    fi
+fi
 
 # Number of iterations for training loop
-NUM_ITERATIONS=1  # Change as needed
+NUM_ITERATIONS=4  # Change as needed
 
 # List of environments (passed as args)
 ENV_IDS=("TicTacToe-v0")
 EVAL_ENV_IDS=("ConnectFour-v0")
-EVAL_EPISODES=128 #0 #20
+EVAL_EPISODES=128
 
 # Maximum sequence length
-MAX_SEQ_LEN=4096
-EPISODES_PER_ITER=16384 #512 #100 #100
+MAX_SEQ_LEN=16384
+EPISODES_PER_ITER=128 #100 #100
 current_checkpoint="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+# current_checkpoint="/scratch/simon/AcornRL/training_runs/qwen_32b/checkpoints/1/model"
 
 # Number of GPUs to use (set dynamically)
 NUM_GPUS_REQUESTED=4  # Change this to set how many GPUs to use
@@ -57,27 +70,34 @@ for ((i=1; i<=NUM_ITERATIONS; i++)); do
 
     # Run data collection
     CUDA_VISIBLE_DEVICES=$GPU_IDS python3 collect_data.py \
-        --checkpoint $current_checkpoint\
+        --checkpoint $current_checkpoint \
         --episodes $EPISODES_PER_ITER \
         --max-seq-len $MAX_SEQ_LEN \
         --env-ids "${ENV_IDS[@]}" \
         --output-dir "$RUN_FOLDER" \
         --iter $i \
-        #--run-eval \
-        #--eval-env-ids "${EVAL_ENV_IDS[@]}" \
-        #--eval-episodes $EVAL_EPISODES
+        --run-eval \
+        --eval-env-ids "${EVAL_ENV_IDS[@]}" \
+        --eval-episodes $EVAL_EPISODES
 
     echo "[Training] Running training script..."
     
     # Run training script (modify with actual script path & arguments)
-    # deepspeed --num_gpus $NUM_GPUS train_model.py \
-    #     --max-seq-len $MAX_SEQ_LEN \
-    #     --output-dir "$RUN_FOLDER" \
-    #     --iter $i
+    deepspeed --include="localhost:4,5,6,7" train_model.py \
+        --max-seq-len $MAX_SEQ_LEN \
+        --output-dir /scratch/simon/AcornRL/training_runs/qwen_32b \
+        --train-method sft \
+        --iter $i \
+        --use-wandb \
+        --wandb-project "acornrl-sft-training" \
+        --gamma 0.9
 
-    # current_checkpoint="$CHECKPOINT_FOLDER/$i/model"
+    current_checkpoint="$CHECKPOINT_FOLDER/$i/model"
 
     echo "=== Completed Iteration $i ==="
 done
 
 echo "Training loop finished!"
+
+
+
