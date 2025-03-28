@@ -44,3 +44,6 @@ poetry.lock
 dist/
 build/
 *.egg-info/
+
+# Ignore wandb
+wandb*
