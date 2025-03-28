@@ -1,0 +1,1 @@
+iteration,set,set_env_ids,num_episodes,checkpoint_path,avg_model_reward,avg_model_win_rate,opponent,avg_opponent_reward,avg_episode_length

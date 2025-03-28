@@ -14,25 +14,29 @@ DATA_FOLDER="$RUN_FOLDER/data"
 CHECKPOINT_FOLDER="$RUN_FOLDER/checkpoints"
 LOG_FOLDER="$RUN_FOLDER/logging"
 
+
 # Create necessary directories
 mkdir -p "$DATA_FOLDER" "$CHECKPOINT_FOLDER" "$LOG_FOLDER"
 
 
-# Number of iterations for training loop
-NUM_ITERATIONS=1  # Change as needed
-
 # List of environments (passed as args)
 ENV_IDS=("TicTacToe-v0")
 EVAL_ENV_IDS=("ConnectFour-v0")
-EVAL_EPISODES=128 #0 #20
+
+# Number of iterations for training loop
+NUM_ITERATIONS=25
+EPISODES_PER_ITER=4096 #512 #100 #100
+EVAL_EPISODES=512 #0 #20
 
 # Maximum sequence length
-MAX_SEQ_LEN=4096
-EPISODES_PER_ITER=16384 #512 #100 #100
+MAX_SEQ_LEN=8192
 current_checkpoint="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+TRAIN_METHOD="spag"
 
 # Number of GPUs to use (set dynamically)
 NUM_GPUS_REQUESTED=4  # Change this to set how many GPUs to use
+MAX_WORKERS=512
+VLLM_MAX_NUM_SEQ=64
 
 # Detect number of GPUs
 NUM_GPUS_AVAILABLE=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
@@ -46,6 +50,17 @@ else
     NUM_GPUS=$NUM_GPUS_REQUESTED
 fi
 GPU_IDS=$(seq -s, 0 $((NUM_GPUS - 1)))  # Generates "0,1" for 2 GPUs, etc.
+
+
+# Define WandB run info
+LOG_WANDB="TRUE"
+WANDB_PROJECT="SuperHumanSofty"
+WANDB_RUN_NAME="$current_checkpoint-$TRAIN_METHOD-$(date +"%Y%m%d-%H%M%S")"
+WANDB_RUN_ID="master-run-$(date +"%Y%m%d-%H%M%S")" 
+
+export WANDB_RUN_NAME
+export WANDB_RUN_ID
+export WANDB_PROJECT
 
 
 echo "Starting RL training loop for $NUM_ITERATIONS iterations..."
@@ -62,6 +77,8 @@ for ((i=1; i<=NUM_ITERATIONS; i++)); do
         --max-seq-len $MAX_SEQ_LEN \
         --env-ids "${ENV_IDS[@]}" \
         --output-dir "$RUN_FOLDER" \
+        --max-workers $MAX_WORKERS \
+        --vllm-max-num-seq $VLLM_MAX_NUM_SEQ \
         --iter $i \
         --run-eval \
         --eval-env-ids "${EVAL_ENV_IDS[@]}" \
@@ -70,12 +87,25 @@ for ((i=1; i<=NUM_ITERATIONS; i++)); do
     echo "[Training] Running training script..."
     
     # Run training script (modify with actual script path & arguments)
-    # deepspeed --num_gpus $NUM_GPUS train_model.py \
-    #     --max-seq-len $MAX_SEQ_LEN \
-    #     --output-dir "$RUN_FOLDER" \
-    #     --iter $i
+    deepspeed --num_gpus $NUM_GPUS train_model.py \
+        --max-seq-len $MAX_SEQ_LEN \
+        --output-dir "$RUN_FOLDER" \
+        --iter $i \
+        --train-method $TRAIN_METHOD
 
-    # current_checkpoint="$CHECKPOINT_FOLDER/$i/model"
+
+    # Log relevant to wandb
+    if [ "$LOG_WANDB" = "TRUE" ]; then
+        echo "=== Updating WandB for iter  $i ==="
+        python3 wandb_summary.py \
+            --iter $i \
+            --data-folder $RUN_FOLDER \
+            --wandb-project $WANDB_PROJECT \
+            --wandb-run-name $WANDB_RUN_NAME
+    fi
+
+
+    current_checkpoint="$CHECKPOINT_FOLDER/$i/model"
 
     echo "=== Completed Iteration $i ==="
 done

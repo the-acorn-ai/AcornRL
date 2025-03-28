@@ -1,0 +1,71 @@
+{
+  "os": "Linux-5.15.0-105-generic-x86_64-with-glibc2.31",
+  "python": "3.11.8",
+  "startedAt": "2025-03-28T06:45:33.434836Z",
+  "args": [
+    "--iter",
+    "1",
+    "--data-folder",
+    "training_runs/2025-03-28/14-29-25",
+    "--wandb-project",
+    "SuperHumandSofty",
+    "--wandb-run-name",
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B-spag-20250328-142925"
+  ],
+  "program": "/home/leon/AcornRL/wandb_summary.py",
+  "codePath": "wandb_summary.py",
+  "git": {
+    "remote": "https://LeonGuertler:@github.com/the-acorn-ai/AcornRL.git",
+    "commit": "3ac83d2724e0f0c70e93357ace16a4b104678ae8"
+  },
+  "email": "leon002@e.ntu.edu.sg",
+  "root": "/home/leon/AcornRL",
+  "host": "IHP-SPD-E3M137",
+  "username": "leon",
+  "executable": "/home/leon/miniconda3/envs/torch2/bin/python3",
+  "codePathLocal": "wandb_summary.py",
+  "cpu_count": 32,
+  "cpu_count_logical": 64,
+  "gpu": "[NVIDIA RTX A5000, NVIDIA RTX A5000, NVIDIA RTX A5000, NVIDIA RTX A5000]",
+  "gpu_count": 4,
+  "disk": {
+    "/": {
+      "total": "3727141928960",
+      "used": "3226174349312"
+    }
+  },
+  "memory": {
+    "total": "270097248256"
+  },
+  "cpu": {
+    "count": 32,
+    "countLogical": 64
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA RTX A5000",
+      "memoryTotal": "24146608128",
+      "cudaCores": 8192,
+      "architecture": "Ampere"
+    },
+    {
+      "name": "NVIDIA RTX A5000",
+      "memoryTotal": "24146608128",
+      "cudaCores": 8192,
+      "architecture": "Ampere"
+    },
+    {
+      "name": "NVIDIA RTX A5000",
+      "memoryTotal": "24146608128",
+      "cudaCores": 8192,
+      "architecture": "Ampere"
+    },
+    {
+      "name": "NVIDIA RTX A5000",
+      "memoryTotal": "24146608128",
+      "cudaCores": 8192,
+      "architecture": "Ampere"
+    }
+  ],
+  "cudaVersion": "12.4"
+}

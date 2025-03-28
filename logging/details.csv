@@ -1,0 +1,1 @@
+iteration,episode_id,env_id,checkpoint_path,player_id,tokens,generation_time,avg_tokens_per_second,final_reward,episode_length,episode_tokens,episode_time,tokens_per_second_episode
