@@ -7,7 +7,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
 import torch.nn.functional as F
 from transformers import Trainer
 # local imports 
-from acornrl.trainers import ReinforceTrainer, SPAGTrainer, SPAGTrainingArguments, PPOTrainer, EnhancedReinforceTrainer
+from acornrl.trainers import (
+    ReinforceTrainer, SPAGTrainer, SPAGTrainingArguments, 
+    PPOTrainer, EnhancedReinforceTrainer, SFTTrainer
+)
 from acornrl.reward_shaping import reshape_rewards
 
 import gc
@@ -63,48 +66,58 @@ def spag_collator(batch, tokenizer, gamma, max_seq_len=1024):
     results['weights'] = torch.Tensor(weights).float()
     return results
 
-# def get_trainer_and_args(train_method, model, base_args, dataset, tokenizer, **kwargs):
-#     """Factory function to create the appropriate trainer and args based on method."""
-#     if train_method == "reinforce":
-#         train_args = TrainingArguments(**base_args)
-#         return ReinforceTrainer(
-#             model=model,
-#             args=train_args,
-#             train_dataset=dataset,
-#             tokenizer=tokenizer
-#         ), train_args
-#     elif train_method == "spag":
-#         spag_args = SPAGTrainingArguments(
-#             lm_sft_coeff=kwargs.get('lm_sft_coeff', 0.1),
-#             lm_kl_coeff=kwargs.get('lm_kl_coeff', 0.01),
-#             clip_range=kwargs.get('clip_range', 0.2),
-#             **base_args
-#         )
-#         return SPAGTrainer(
-#             model=model,
-#             args=spag_args,
-#             train_dataset=dataset,
-#             tokenizer=tokenizer
-#         ), spag_args
-#     else:
-#         raise ValueError(f"Unknown training method: {train_method}")
+def filter_by_length(batch, tokenizer, max_seq_len=1024):
+    # prompt_texts = batch["observation"]
+    prompt_texts = batch["formatted_observation"]
+    completion_texts = [
+        f"{r}</think><answer>{a}</answer>"
+        for r, a in zip(batch["reasoning"], batch["action"])
+    ]
+    full_texts = [p + "\n" + c for p, c in zip(prompt_texts, completion_texts)]
+
+    tokenized_lengths = [len(tokenizer(text, add_special_tokens=False)["input_ids"]) for text in full_texts]
+    return [True if length <= max_seq_len else False for length in tokenized_lengths]
 
 def get_trainer_and_args(train_method, model, base_args, dataset, tokenizer, **kwargs):
-    train_args = TrainingArguments(**base_args)
-
-    if train_method == "ppo":
-        trainer = PPOTrainer(
-            model=model, args=train_args, train_dataset=dataset, tokenizer=tokenizer
+    """Factory function to create the appropriate trainer and args based on method."""
+    if train_method == "reinforce":
+        train_args = TrainingArguments(**base_args)
+        return ReinforceTrainer(
+            model=model,
+            args=train_args,
+            train_dataset=dataset,
+            tokenizer=tokenizer
+        ), train_args
+    elif train_method == "sft":
+        sft_args = SPAGTrainingArguments(
+            lm_sft_coeff=kwargs.get('lm_sft_coeff', 0.1),
+            lm_kl_coeff=kwargs.get('lm_kl_coeff', 0.01),
+            clip_range=kwargs.get('clip_range', 0.2),
+            **base_args
         )
+        return SFTTrainer(
+            model=model,
+            args=sft_args,
+            train_dataset=dataset,
+            tokenizer=tokenizer
+        ), sft_args
+    elif train_method == "ppo":
+        train_args = TrainingArguments(**base_args)
+        return PPOTrainer(
+            model=model, 
+            args=train_args, 
+            train_dataset=dataset,
+            tokenizer=tokenizer
+        ), train_args
     elif train_method == "enhanced_reinforce":
-        trainer = EnhancedReinforceTrainer(
-            model=model, args=train_args, train_dataset=dataset, tokenizer=tokenizer,
+        train_args = TrainingArguments(**base_args)
+        return EnhancedReinforceTrainer(
+            model=model,
+            args=train_args, 
+            train_dataset=dataset, 
+            tokenizer=tokenizer,
             kl_coeff=kwargs.get("lm_kl_coeff", 0.01)
-        )
-    elif train_method == "reinforce":
-        trainer = ReinforceTrainer(
-            model=model, args=train_args, train_dataset=dataset, tokenizer=tokenizer
-        )
+        ), train_args
     elif train_method == "spag":
         spag_args = SPAGTrainingArguments(
             lm_sft_coeff=kwargs.get('lm_sft_coeff', 0.1),
@@ -122,14 +135,14 @@ def get_trainer_and_args(train_method, model, base_args, dataset, tokenizer, **k
 
 def get_data_processor(train_method, tokenizer, gamma, max_seq_len):
     """Returns the appropriate data processing function based on method."""
-    if train_method == "spag":
+    if train_method in ["spag", "sft"]:
         return lambda batch: spag_collator(batch, tokenizer, gamma, max_seq_len)
     else:
         return lambda batch: tokenize_and_mask(batch, tokenizer, gamma, max_seq_len)
 
 def get_keep_columns(train_method):
     """Returns the columns to keep based on training method."""
-    if train_method == "spag":
+    if train_method in ["spag", "sft"]:
         return ["input_ids", "attention_mask", "labels", "reward", "sft_mask", "weights"]
     else:
         return ["input_ids", "attention_mask", "labels", "reward"]
@@ -149,7 +162,7 @@ def main():
 
     parser.add_argument("--normalize-rewards", action="store_true", help="Whether the reward should be normalized")
     parser.add_argument("--reward-transformations", nargs="+", required=False, default=None, help="List of reward transformations")
-    parser.add_argument("--train-method", type=str, default="spag", help="Training method", choices=["reinforce", "spag"])
+    parser.add_argument("--train-method", type=str, default="reinforce", help="Training method", choices=["reinforce", "spag", "sft", "ppo", "enhanced_reinforce"])
     
     parser.add_argument("--lm-sft-coeff", type=float, default=0.1, help="Weight for supervised fine-tuning loss")
     parser.add_argument("--lm-kl-coeff", type=float, default=0.01, help="Weight for KL divergence penalty")
@@ -172,7 +185,7 @@ def main():
     # Determine whether to load from previous checkpoint
     first_training = args.iter == 1
     prev_model_path = os.path.join(args.output_dir, "checkpoints", f"{args.iter-1}", "model")
-    model_path = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B" if first_training else prev_model_path
+    model_path = args.model_path if first_training else prev_model_path
 
     # load the data
     training_data_path = os.path.join(args.output_dir, "data", f"train_{args.iter}.csv")
@@ -183,7 +196,7 @@ def main():
     df_filtered = df[df["episode_id"].isin(episodes_with_reward1)]
 
     # 2) Also keep only the rows where reasoning is not empty and final_reward != 0
-    df = df_filtered[(df_filtered["reasoning"] != "")] # & (df_filtered["final_reward"] != 0)]
+    df = df_filtered[(df_filtered["reasoning"] != "") & (df_filtered["final_reward"] != 0)]
 
     # 3) Check if anything is left
     if len(df) == 0:
@@ -208,6 +221,11 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # Filter dataset by length using the filter_by_length function
+    print(f"[Training] Initial dataset size: {len(dataset)}")
+    dataset = dataset.filter(lambda batch: filter_by_length(batch, tokenizer, args.max_seq_len), batched=True)
+    print(f"[Training] After length filtering: {len(dataset)} examples remaining")
+    
     # Get the appropriate data processor based on method
     data_processor = get_data_processor(args.train_method, tokenizer, args.gamma, args.max_seq_len)
     dataset = dataset.map(data_processor, batched=True)
@@ -248,7 +266,10 @@ def main():
         run_name = args.wandb_name if args.wandb_name else f"full-training-iter-{args.iter}-{time.strftime('%Y%m%d-%H%M%S')}"
         
         # Initialize wandb
-        wandb.init(project=args.wandb_project, name=run_name)
+        wandb.init(
+            project=args.wandb_project,
+            name=run_name
+        )
 
     # Training arguments
     training_args_dict = {
@@ -287,8 +308,13 @@ def main():
 
     # Train
     trainer.train()
-    model = trainer.model 
-    model.ref_model = None
+    model = trainer.model
+    # Clean up reference model if it exists
+    if hasattr(model, "ref_model") and model.ref_model is not None:
+        model.ref_model = None
+        torch.cuda.empty_cache()
+        gc.collect()
+
     model.save_pretrained(model_output_path, safe_serialization=True)
     tokenizer.save_pretrained(model_output_path)
    

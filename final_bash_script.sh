@@ -80,9 +80,9 @@ for ((i=1; i<=NUM_ITERATIONS; i++)); do
         --max-workers $MAX_WORKERS \
         --vllm-max-num-seq $VLLM_MAX_NUM_SEQ \
         --iter $i \
-        --run-eval \
-        --eval-env-ids "${EVAL_ENV_IDS[@]}" \
-        --eval-episodes $EVAL_EPISODES
+        #--run-eval \
+        #--eval-env-ids "${EVAL_ENV_IDS[@]}" \
+        #--eval-episodes $EVAL_EPISODES
 
     echo "[Training] Running training script..."
     
@@ -105,7 +105,7 @@ for ((i=1; i<=NUM_ITERATIONS; i++)); do
     fi
 
 
-    current_checkpoint="$CHECKPOINT_FOLDER/$i/model"
+    # current_checkpoint="$CHECKPOINT_FOLDER/$i/model"
 
     echo "=== Completed Iteration $i ==="
 done

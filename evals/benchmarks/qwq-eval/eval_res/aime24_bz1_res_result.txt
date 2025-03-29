@@ -1,0 +1,2 @@
+Task: math_opensource/aime24, Accuracy: 0.3333333333333333
+Evaluation complete!

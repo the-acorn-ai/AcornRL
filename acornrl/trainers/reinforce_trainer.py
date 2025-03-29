@@ -1,7 +1,6 @@
 from transformers import Trainer
 import torch.nn.functional as F
 
-
 class ReinforceTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         rewards = inputs.pop("reward")

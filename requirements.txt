@@ -1,5 +1,5 @@
 # Core framework
-textarena
+textarena>=0.6.0
 
 # Model serving
 vllm
@@ -12,9 +12,16 @@ requests
 tqdm
 concurrent-futures
 logging
+numpy
+tqdm
+datasets
+peft
 
 # File format handling
 json
 
 # Optional but recommended
 nvidia-cuda-runtime
+
+# logging
+wandb
