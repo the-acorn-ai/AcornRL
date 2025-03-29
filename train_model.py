@@ -7,7 +7,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
 import torch.nn.functional as F
 from transformers import Trainer
 # local imports 
-from acornrl.trainers import ReinforceTrainer, SPAGTrainer, SPAGTrainingArguments, SFTTrainer
+from acornrl.trainers import (
+    ReinforceTrainer, SPAGTrainer, SPAGTrainingArguments, 
+    PPOTrainer, EnhancedReinforceTrainer, SFTTrainer
+)
 from acornrl.reward_shaping import reshape_rewards
 
 import gc
@@ -98,6 +101,23 @@ def get_trainer_and_args(train_method, model, base_args, dataset, tokenizer, **k
             train_dataset=dataset,
             tokenizer=tokenizer
         ), sft_args
+    elif train_method == "ppo":
+        train_args = TrainingArguments(**base_args)
+        return PPOTrainer(
+            model=model, 
+            args=train_args, 
+            train_dataset=dataset,
+            tokenizer=tokenizer
+        ), train_args
+    elif train_method == "enhanced_reinforce":
+        train_args = TrainingArguments(**base_args)
+        return EnhancedReinforceTrainer(
+            model=model,
+            args=train_args, 
+            train_dataset=dataset, 
+            tokenizer=tokenizer,
+            kl_coeff=kwargs.get("lm_kl_coeff", 0.01)
+        ), train_args
     elif train_method == "spag":
         spag_args = SPAGTrainingArguments(
             lm_sft_coeff=kwargs.get('lm_sft_coeff', 0.1),
@@ -105,14 +125,13 @@ def get_trainer_and_args(train_method, model, base_args, dataset, tokenizer, **k
             clip_range=kwargs.get('clip_range', 0.2),
             **base_args
         )
-        return SPAGTrainer(
-            model=model,
-            args=spag_args,
-            train_dataset=dataset,
-            tokenizer=tokenizer
-        ), spag_args
+        trainer = SPAGTrainer(
+            model=model, args=spag_args, train_dataset=dataset, tokenizer=tokenizer
+        )
     else:
-        raise ValueError(f"Unknown training method: {train_method}")
+        raise ValueError(f"Unknown method: {train_method}")
+
+    return trainer, train_args
 
 def get_data_processor(train_method, tokenizer, gamma, max_seq_len):
     """Returns the appropriate data processing function based on method."""
@@ -143,7 +162,7 @@ def main():
 
     parser.add_argument("--normalize-rewards", action="store_true", help="Whether the reward should be normalized")
     parser.add_argument("--reward-transformations", nargs="+", required=False, default=None, help="List of reward transformations")
-    parser.add_argument("--train-method", type=str, default="reinforce", help="Training method", choices=["reinforce", "spag", "sft"])
+    parser.add_argument("--train-method", type=str, default="reinforce", help="Training method", choices=["reinforce", "spag", "sft", "ppo", "enhanced_reinforce"])
     
     parser.add_argument("--lm-sft-coeff", type=float, default=0.1, help="Weight for supervised fine-tuning loss")
     parser.add_argument("--lm-kl-coeff", type=float, default=0.01, help="Weight for KL divergence penalty")

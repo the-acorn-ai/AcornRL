@@ -45,6 +45,9 @@ dist/
 build/
 *.egg-info/
 
+# Ignore wandb
+wandb*
+
 # Ignore eval data
 **/eval/**/*.json
 **/eval/**/*.jsonl

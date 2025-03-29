@@ -5,7 +5,8 @@ import time, requests, json, logging, os
 from typing import Dict, Tuple, List, Optional, Any
 
 
-STANDARD_GAME_PROMPT = "You are a competitive game player. Make sure you read the game instructions carefully, and always follow the required format. On your turn, first think about what you want to do, and then return the next move in the correct format."
+# STANDARD_GAME_PROMPT = "You are a competitive game player. Make sure you read the game instructions carefully, and always follow the required format. On your turn, first think about what you want to do, and then return the next move in the correct format. You ALWAYS have to return a valid action. The environment will tell you once the game is over."
+STANDARD_GAME_PROMPT = f"You are a competitive game player. Make sure you read the game instructions carefully, and always follow the required format. On your turn, first think about what you want to do, and then return the next move in the correct format. You ALWAYS have to return a valid action. The environment will tell you once the game is over. On your turn, first think about what you want to do, and then return you final answer formatted as \\boxed{{}}"
 
 
 class VLLMInferenceClient:
@@ -39,7 +40,7 @@ class VLLMInferenceClient:
     def format_observation(self, observation: str) -> str:
         begin_token = "<｜begin▁of▁sentence｜>"
         if not begin_token in observation:
-            formatted_input = f"{begin_token}Please reason step by step, and put your final answer within [ ].\n{self.standard_prompt}\n<｜User｜>{observation}\n<｜Assistant｜><think>\n"
+            formatted_input = f"{begin_token}Please reason step by step, and put your final answer within \\boxed{{}}.\n{self.standard_prompt}\n<｜User｜>{observation}\n<｜Assistant｜><think>\n"
         else:
             # Observation already has formatting
             formatted_input = observation
@@ -97,6 +98,7 @@ class VLLMServerManager:
         self,
         model_path: str,
         max_seq_len: int = 2048,
+        max_num_seq: int = 64,
         gpus: Optional[List[int]] = None,
         tensor_parallel_size: int = 1,
         base_port: int = 8000,
@@ -106,6 +108,7 @@ class VLLMServerManager:
         self.tensor_parallel_size = tensor_parallel_size
         self.base_port = base_port 
         self.max_seq_len = max_seq_len
+        self.max_num_seq = max_num_seq
         self.lora_modules = lora_modules or {}
 
         # Use all GPUs if none are specified
@@ -148,7 +151,7 @@ class VLLMServerManager:
                 "--gpu-memory-utilization", "0.9",
                 "--max-model-len", str(self.max_seq_len),
                 "--trust-remote-code",
-                "--max-num-seqs", "64"
+                "--max-num-seqs", str(self.max_num_seq) #f"64"
             ]
 
             
