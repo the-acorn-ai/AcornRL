@@ -4,8 +4,8 @@
 BASE_DIR="training_runs"
 
 # Get current date and time
-CURRENT_DATE=$(date +"%Y-%m-%d")
-CURRENT_TIME=$(date +"%H-%M-%S")
+CURRENT_DATE="2025-03-28" #$(date +"%Y-%m-%d")
+CURRENT_TIME="14-51-15" #$(date +"%H-%M-%S")
 
 # Define directories
 DAY_FOLDER="$BASE_DIR/$CURRENT_DATE"
@@ -67,7 +67,10 @@ echo "Starting RL training loop for $NUM_ITERATIONS iterations..."
 echo "with environments: $ENV_IDS"
 echo "Using GPUs: $GPU_IDS"
 
-for ((i=1; i<=NUM_ITERATIONS; i++)); do
+current_checkpoint="$CHECKPOINT_FOLDER/1/model"
+
+
+for ((i=2; i<=NUM_ITERATIONS; i++)); do
     echo "=== Iteration $i ==="
 
     # Run data collection

@@ -80,34 +80,34 @@ class CSVManagerData:
         Continuously pop items from the queue and write them to the CSV file 
         until the queue is empty and we have been signaled to stop.
         """
-        with open(self.file_name, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            # Keep writing while not (stop_event is set AND queue is empty)
-            while not (self._stop_event.is_set() and self.file_queue.empty()):
-                try:
-                    # Block for a short time, so we don't busy-wait
-                    data = self.file_queue.get(timeout=0.1)
+        # Keep writing while not (stop_event is set AND queue is empty)
+        while not (self._stop_event.is_set() and self.file_queue.empty()):
+            try:
+                # Block for a short time, so we don't busy-wait
+                data = self.file_queue.get(timeout=1)
+                with open(self.file_name, "a", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
                     writer.writerow(data)
-                except queue.Empty:
-                    # If we time out, just check the loop condition again
-                    pass
+            except queue.Empty:
+                # If we time out, just check the loop condition again
+                pass
 
 
     def add_episode_information(self, eps_info):
         self.episode_info_file_queue.put(eps_info)
 
     def _write_to_csv_info(self):
-        with open(self.file_name_info, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            # Keep writing while not (stop_event is set AND queue is empty)
-            while not (self._stop_event.is_set() and self.episode_info_file_queue.empty()):
-                try:
-                    # Block for a short time, so we don't busy-wait
-                    data = self.episode_info_file_queue.get(timeout=0.1)
+        # Keep writing while not (stop_event is set AND queue is empty)
+        while not (self._stop_event.is_set() and self.episode_info_file_queue.empty()):
+            try:
+                # Block for a short time, so we don't busy-wait
+                data = self.episode_info_file_queue.get(timeout=1)
+                with open(self.file_name_info, "a", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
                     writer.writerow(data)
-                except queue.Empty:
-                    # If we time out, just check the loop condition again
-                    pass
+            except queue.Empty:
+                # If we time out, just check the loop condition again
+                pass
 
-        
+    
 
